@@ -5,6 +5,7 @@
 #define MyAppURL "https://github.com/nater0000/nydusnet"
 #define MyInstallDir "NydusNet"
 #define MyOutputDir "Output"
+#define AppIconFile "{#RootDir}\resources\images\nydusnet.ico"
 
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -20,17 +21,17 @@ SolidCompression=yes
 WizardStyle=modern
 OutputDir={#MyOutputDir}
 OutputBaseFilename={#MyAppName}_Installer_{#MyAppVersion}
-SetupIconFile=..\resources\images\nydusnet.ico
+SetupIconFile={#AppIconFile}
 ChangesAssociations=yes
 PrivilegesRequired=lowest
 
 [Files]
 ; Main executable built by PyInstaller
-Source: "..\dist\NydusNet.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RootDir}\dist\NydusNet.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Bundled data files and folders
-Source: "..\dist\ansible\*"; DestDir: "{app}\ansible"; Flags: recursesubdirs createallsubdirs
-Source: "..\dist\resources\syncthing\*"; DestDir: "{app}\resources\syncthing"; Flags: recursesubdirs createallsubdirs
+Source: "{#RootDir}\dist\ansible\*"; DestDir: "{app}\ansible"; Flags: recursesubdirs createallsubdirs
+Source: "{#RootDir}\dist\resources\syncthing\*"; DestDir: "{app}\resources\syncthing"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\NydusNet.exe"
