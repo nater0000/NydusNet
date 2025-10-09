@@ -4,6 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "NydusNet"
+version = "1.0.0"
 authors = [
   { name="Nathan R", email="moso.nate.r@gmail.com" },
 ]
@@ -42,4 +43,3 @@ build_script = "scripts/build.py"
 installer_script = "scripts/create_installer.iss"
 # Add the Syncthing version here
 syncthing_version = "v2.0.10"
-version = "1.0.0"

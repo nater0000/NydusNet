@@ -37,7 +37,7 @@ jobs:
       - name: Create Installer 🎁
         run: iscc ./scripts/create_installer.iss
 
-      - name: Create Release 🎁
+      - name: Create Release 📨
         id: create_release
         uses: ncipollo/release-action@v1
         with:
