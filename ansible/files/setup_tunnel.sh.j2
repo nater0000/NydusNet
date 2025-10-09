@@ -1,0 +1,121 @@
+#!/bin/bash
+
+LOG_FILE="/tmp/setup_tunnel.log"
+LOCK_FILE="/tmp/certbot_nginx.lock"
+WEBROOT_PATH="/var/www/html"
+
+# Function to write log messages
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+# --- Main Script Logic ---
+exec 2>> "$LOG_FILE"
+
+if [[ -n "$SSH_ORIGINAL_COMMAND" ]]; then
+  read -r full_hostname remote_port <<< "$SSH_ORIGINAL_COMMAND"
+else
+  log "ERROR: Script called without SSH_ORIGINAL_COMMAND."
+  exit 1
+fi
+
+log "---"
+log "START: Received request for $full_hostname on port $remote_port."
+
+# Validate input
+if ! [[ "$full_hostname" =~ ^[a-zA-Z0-9.-]+$ ]] || ! [[ "$remote_port" =~ ^[0-9]+$ ]]; then
+  log "ERROR: Invalid hostname or port format."
+  exit 1
+fi
+
+CERT_DIR="/etc/letsencrypt/live/$full_hostname"
+NGINX_CONF="/etc/nginx/sites-available/$full_hostname"
+
+# --- Locking Mechanism for Certbot and Nginx ---
+log "Acquiring lock for Certbot and Nginx operations..."
+(
+    flock -x 200 # This command waits for an exclusive lock on the entire process
+
+    log "Lock acquired for $full_hostname."
+
+    # STAGE 1: Obtain Certificate if it doesn't exist
+    if [ ! -d "$CERT_DIR" ]; then
+        log "Certificate for $full_hostname not found. Beginning Stage 1: Validation."
+        
+        log "Writing temporary validation config to $NGINX_CONF."
+        cat <<EOF | sudo /usr/bin/tee "$NGINX_CONF" > /dev/null
+server {
+    listen 80;
+    server_name $full_hostname;
+    location /.well-known/acme-challenge/ {
+        root $WEBROOT_PATH;
+    }
+}
+EOF
+        sudo /usr/bin/ln -sfn "$NGINX_CONF" "/etc/nginx/sites-enabled/"
+        log "Testing Nginx configuration..."
+        if ! sudo /usr/sbin/nginx -t; then
+            log "ERROR: Nginx configuration test failed. Aborting."
+            exit 1
+        fi
+        sudo /usr/sbin/nginx -s reload
+        log "Nginx reloaded with temporary config."
+        sleep 1
+
+        log "Running Certbot with --webroot authenticator..."
+        sudo /usr/bin/certbot certonly --webroot -w "$WEBROOT_PATH" -d "$full_hostname" --non-interactive --agree-tos -m {{ certbot_email }}
+        
+        if [ $? -ne 0 ]; then
+            log "ERROR: Certbot failed to obtain a certificate for $full_hostname."
+            exit 1
+        fi
+        log "Certbot successful. Certificate obtained."
+    else
+        log "Certificate for $full_hostname already exists. Skipping Stage 1."
+    fi
+
+    # STAGE 2: Create the Final HTTPS Nginx Configuration
+    log "Beginning Stage 2: Writing final HTTPS configuration to $NGINX_CONF."
+    cat <<EOF | sudo /usr/bin/tee "$NGINX_CONF" > /dev/null
+server {
+    listen 80;
+    server_name $full_hostname;
+    location /.well-known/acme-challenge/ {
+        root $WEBROOT_PATH;
+    }
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name $full_hostname;
+
+    ssl_certificate /etc/letsencrypt/live/$full_hostname/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$full_hostname/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:$remote_port;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+EOF
+
+    log "Testing final Nginx configuration..."
+    if ! sudo /usr/sbin/nginx -t; then
+        log "ERROR: Final Nginx configuration test failed. Not reloading."
+        exit 1
+    fi
+    log "Reloading Nginx with final config."
+    sudo /usr/sbin/nginx -s reload
+    log "Nginx reloaded successfully."
+
+) 200>"$LOCK_FILE"
+
+log "Lock released. END: Process for $full_hostname finished successfully."

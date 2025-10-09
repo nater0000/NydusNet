@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "toml"] # You need toml to read the version
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "NydusNet"
+version = "1.0.0"
+authors = [
+  { name="Nathan R", email="moso.nate.r@gmail.com" },
+]
+description = "A decentralized hostname router for HTTPS over SSH connections using Syncthing"
+readme = "docs/README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+]
+
+# Runtime dependencies (replaces requirements.txt)
+dependencies = [
+    "customtkinter",
+    "syncthing.py",
+    "diff-match-patch",
+    "cryptography",
+    "requests",
+    "watchdog",
+    "qrcode",
+    "Pillow",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/nater0000/nydusnet"
+
+[tool.setuptools]
+packages = ["src"]
+
+# Custom tool section to define script paths
+[tool.nydusnet]
+build_script = "scripts/build.py"
+installer_script = "scripts/create_installer.iss"
+# Add the Syncthing version here
+syncthing_version = "v2.0.10"
