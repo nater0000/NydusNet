@@ -23,7 +23,6 @@ jobs:
       - name: Install dependencies ✨
         run: pip install .
 
-      # Use a robust way to install Inno Setup.
       - name: Install Inno Setup 🛠️
         run: |
           choco install innosetup
@@ -32,8 +31,15 @@ jobs:
 
       - name: Run build script 🏗️
         run: python scripts/build.py
+      
+      # --- New Debug Step ---
+      - name: List files for debugging 🔎
+        run: |
+          ls -R dist
+          ls -R resources
+        shell: bash
+      # --- End of New Debug Step ---
 
-      # Call the installer compiler separately after the build script.
       - name: Create Installer 🎁
         run: iscc ./scripts/create_installer.iss
 
