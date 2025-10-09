@@ -34,13 +34,13 @@ jobs:
       # Installs the dependencies from pyproject.toml.
       # The build.py script requires 'toml' to be installed.
       - name: Install dependencies ✨
-        run: pip install poetry toml PyInstaller requests
+        run: pip install .
 
       # Installs Inno Setup Compiler.
       - name: Install Inno Setup 🛠️
         uses: zhuzichu520/inno-setup-action@v1.0.0
         with:
-            filepath: '../../scripts/create_installer.iss'
+            filepath: './scripts/create_installer.iss'
 
       # Runs your build.py script. This script will:
       # 1. Download syncthing.exe.

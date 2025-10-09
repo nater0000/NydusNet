@@ -23,12 +23,12 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies ✨
-        run: pip install poetry toml PyInstaller requests
+        run: pip install .
 
       - name: Install Inno Setup 🛠️
         uses: zhuzichu520/inno-setup-action@v1.0.0
         with:
-            filepath: '../../scripts/create_installer.iss'
+            filepath: './scripts/create_installer.iss'
 
       - name: Run build script 🏗️
         run: python scripts/build.py
