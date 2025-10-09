@@ -1,18 +1,14 @@
 name: Build and Package ⚙️📦
 
-# Triggers the workflow on every push to the 'main' branch.
 on:
   push:
     branches:
       - main
 
-# A workflow run is made up of one or more jobs.
 jobs:
   build:
     runs-on: windows-latest
     
-    # Steps for building the app. These are similar to the release workflow
-    # but with a different final step.
     steps:
       - name: Checkout code 💻
         uses: actions/checkout@v4
@@ -26,15 +22,17 @@ jobs:
         run: pip install .
 
       - name: Install Inno Setup 🛠️
-        uses: zhuzichu520/inno-setup-action@v1.0.0
-        with:
-            filepath: './scripts/create_installer.iss'
-
+        run: |
+          choco install innosetup
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
+        
       - name: Run build script 🏗️
         run: python scripts/build.py
 
-      # This is the key difference. Instead of creating a release,
-      # this step uploads the installer as a workflow artifact.
+      - name: Create Installer 📦
+        run: iscc ./scripts/create_installer.iss
+
       - name: Upload installer artifact 📤
         uses: actions/upload-artifact@v4
         with:

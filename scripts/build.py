@@ -69,31 +69,17 @@ def download_syncthing(version: str):
         logging.error("Downloaded file is not a valid zip archive.")
         return False
 
-def run_installer_compiler(version: str):
-    """
-    Runs the Inno Setup Compiler to create the final installer.
-    """
-    installer_script = get_config_value('installer_script')
-    if not installer_script:
-        logging.error("Installer script path not found in pyproject.toml.")
-        return
-
-    # Use a preprocessor flag to pass the version to the Inno Setup script
-    command = ['iscc.exe', f'/DMyAppVersion={version}', installer_script]
-    
-    try:
-        logging.info(f"Running Inno Setup Compiler: {' '.join(command)}")
-        subprocess.run(command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        logging.info("Installer created successfully!")
-    except FileNotFoundError:
-        logging.error("Inno Setup Compiler (iscc.exe) not found. Please install Inno Setup and add it to your PATH.")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Inno Setup Compiler failed with exit code {e.returncode}")
-
 if __name__ == '__main__':
     syncthing_version = get_config_value('syncthing_version')
-    app_version = get_config_value('app_version') # Assuming 'app_version' key in pyproject.toml
-    
+
+    try:
+        with open('pyproject.toml', 'r') as f:
+            project_data = toml.load(f)
+            app_version = project_data['project']['version']
+    except (FileNotFoundError, KeyError) as e:
+        logging.error(f"Failed to read app version from pyproject.toml: {e}")
+        app_version = None
+
     if not syncthing_version or not app_version:
         logging.error("Required version information not found. Build aborted.")
     elif not download_syncthing(syncthing_version):
@@ -125,6 +111,3 @@ if __name__ == '__main__':
         logging.info(f"Running PyInstaller with args: {' '.join(pyinstaller_args)}")
         
         PyInstaller.__main__.run(pyinstaller_args)
-        
-        # Step 2: Run the installer compiler after PyInstaller completes
-        run_installer_compiler(app_version)
