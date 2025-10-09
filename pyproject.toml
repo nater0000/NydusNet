@@ -20,7 +20,7 @@ classifiers = [
 # Runtime dependencies (replaces requirements.txt)
 dependencies = [
     "customtkinter",
-    "syncthing.py",
+    "syncthing",
     "diff-match-patch",
     "cryptography",
     "requests",
