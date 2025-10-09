@@ -1,0 +1,68 @@
+name: Build and Release Installer
+
+# Controls when the workflow will run.
+# It runs on pushes to the 'main' branch that contain a tag starting with 'v'.
+# For example, 'v1.0.0' or 'v1.0'.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel.
+jobs:
+  build:
+    # The type of runner that the job will run on.
+    # 'windows-latest' is needed for building a Windows installer.
+    runs-on: windows-latest
+    
+    # Set permissions for the GITHUB_TOKEN to allow creating releases.
+    permissions:
+      contents: write
+
+    # Steps represent a sequence of tasks that will be executed as part of the job.
+    steps:
+      # Checks out your repository under $GITHUB_WORKSPACE, so your job can access it.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Sets up a specific version of Python.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Installs the dependencies from pyproject.toml.
+      # The build.py script requires 'toml' to be installed.
+      - name: Install dependencies
+        run: pip install poetry toml PyInstaller requests
+
+      # Installs Inno Setup Compiler.
+      - name: Install Inno Setup
+        uses: crazy-max/ghaction-setup-innosetup@v1
+
+      # Runs your build.py script. This script will:
+      # 1. Download syncthing.exe.
+      # 2. Run PyInstaller to create the single-file executable.
+      # 3. Call iscc.exe to create the final installer.
+      - name: Run build script
+        run: python scripts/build.py
+
+      # This action creates a GitHub Release from the push event that triggered the workflow.
+      - name: Create Release
+        id: create_release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          # The installer file is located in the Output directory as defined in your .iss script.
+          artifacts: "Output/*.exe"
+          body: |
+            ## NydusNet Release ${{ github.ref_name }}
+            
+            This is an automated release of the NydusNet Windows installer.
+            
+            ### Changes
+            - ...
+            - ...
