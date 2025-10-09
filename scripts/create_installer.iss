@@ -7,6 +7,7 @@
 #define MyOutputDir "Output"
 #define RootDir "."
 
+SourceDir=..
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyPublisher}
