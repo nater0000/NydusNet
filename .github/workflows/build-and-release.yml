@@ -1,4 +1,4 @@
-name: Build and Release Installer
+name: Build and Release ⚙️🚀
 
 # Controls when the workflow will run.
 # It runs on pushes to the 'main' branch that contain a tag starting with 'v'.
@@ -22,33 +22,35 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job.
     steps:
       # Checks out your repository under $GITHUB_WORKSPACE, so your job can access it.
-      - name: Checkout code
+      - name: Checkout code 💻
         uses: actions/checkout@v4
 
       # Sets up a specific version of Python.
-      - name: Set up Python
+      - name: Set up Python 🐍
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       # Installs the dependencies from pyproject.toml.
       # The build.py script requires 'toml' to be installed.
-      - name: Install dependencies
+      - name: Install dependencies ✨
         run: pip install poetry toml PyInstaller requests
 
       # Installs Inno Setup Compiler.
-      - name: Install Inno Setup
-        uses: crazy-max/ghaction-setup-innosetup@v1
+      - name: Install Inno Setup 🛠️
+        uses: zhuzichu520/inno-setup-action@v1.0.0
+        with:
+            filepath: '../../scripts/create_installer.iss'
 
       # Runs your build.py script. This script will:
       # 1. Download syncthing.exe.
       # 2. Run PyInstaller to create the single-file executable.
       # 3. Call iscc.exe to create the final installer.
-      - name: Run build script
+      - name: Run build script 🏗️
         run: python scripts/build.py
 
       # This action creates a GitHub Release from the push event that triggered the workflow.
-      - name: Create Release
+      - name: Create Release 🎁
         id: create_release
         uses: ncipollo/release-action@v1
         with:
