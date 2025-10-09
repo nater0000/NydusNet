@@ -5,8 +5,7 @@
 #define MyAppURL "https://github.com/nater0000/nydusnet"
 #define MyInstallDir "NydusNet"
 #define MyOutputDir "Output"
-#define RootDir ".."
-#define AppIconFile "{#RootDir}\resources\images\nydusnet.ico"
+#define RootDir "."
 
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -22,7 +21,7 @@ SolidCompression=yes
 WizardStyle=modern
 OutputDir={#MyOutputDir}
 OutputBaseFilename={#MyAppName}_Installer_{#MyAppVersion}
-SetupIconFile={#AppIconFile}
+SetupIconFile={#RootDir}\resources\images\nydusnet.ico
 ChangesAssociations=yes
 PrivilegesRequired=lowest
 
