@@ -5,6 +5,7 @@
 #define MyAppURL "https://github.com/nater0000/nydusnet"
 #define MyInstallDir "NydusNet"
 #define MyOutputDir "Output"
+#define RootDir ".."
 #define AppIconFile "{#RootDir}\resources\images\nydusnet.ico"
 
 AppName={#MyAppName}
