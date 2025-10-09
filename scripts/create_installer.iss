@@ -20,7 +20,7 @@ SolidCompression=yes
 WizardStyle=modern
 OutputDir={#MyOutputDir}
 OutputBaseFilename={#MyAppName}_Installer_{#MyAppVersion}
-SetupIconFile=.\resources\nydusnet.ico ; You will need to add an icon here
+SetupIconFile=.\resources\images\nydusnet.ico ; You will need to add an icon here
 ChangesAssociations=yes
 PrivilegesRequired=lowest
 
