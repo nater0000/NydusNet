@@ -5,9 +5,8 @@
 #define MyAppURL "https://github.com/nater0000/nydusnet"
 #define MyInstallDir "NydusNet"
 #define MyOutputDir "Output"
-#define RootDir ""
+#define RootDir "{src}\..\.."
 
-SourceDir=..
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyPublisher}
@@ -20,7 +19,7 @@ UninstallDisplayIcon={app}\NydusNet.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-OutputDir={#MyOutputDir}
+OutputDir={#RootDir}\{#MyOutputDir}
 OutputBaseFilename={#MyAppName}_Installer_{#MyAppVersion}
 SetupIconFile={#RootDir}\resources\images\nydusnet.ico
 ChangesAssociations=yes
@@ -31,8 +30,8 @@ PrivilegesRequired=lowest
 Source: "{#RootDir}\dist\NydusNet.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Bundled data files and folders
-Source: "{#RootDir}\dist\ansible\*"; DestDir: "{app}\ansible"; Flags: recursesubdirs createallsubdirs
-Source: "{#RootDir}\dist\resources\syncthing\*"; DestDir: "{app}\resources\syncthing"; Flags: recursesubdirs createallsubdirs
+Source: "{#RootDir}\resources\ansible\*"; DestDir: "{app}\ansible"; Flags: recursesubdirs createallsubdirs
+Source: "{#RootDir}\resources\syncthing\*"; DestDir: "{app}\syncthing"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\NydusNet.exe"

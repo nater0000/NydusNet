@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "toml"] # You need toml to read the version
+requires = ["setuptools>=61.0", "toml"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -19,6 +19,9 @@ classifiers = [
 
 # Runtime dependencies (replaces requirements.txt)
 dependencies = [
+    "ansible",
+    "windows-curses ; sys_platform == 'win32'",
+    "wcwidth",
     "customtkinter",
     "syncthing",
     "diff-match-patch",

@@ -6,6 +6,7 @@ import io
 import logging
 import toml
 import subprocess
+import shutil
 
 # Configure basic logging to see the download progress
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -92,9 +93,10 @@ if __name__ == '__main__':
         app_name = 'NydusNet'
         
         # Define any additional data files or directories to include
+        # This ensures syncthing.exe and the ansible folder are bundled.
         data_to_add = [
             os.path.join('resources', 'syncthing'),
-            os.path.join('ansible')
+            os.path.join('resources', 'ansible')
         ]
         
         pyinstaller_args = [
@@ -103,6 +105,9 @@ if __name__ == '__main__':
             '--onefile',
             '--windowed',
             '--noconfirm',
+            '--clean',
+            '--paths', os.path.join(os.getcwd(), "src", "mocks"),
+            f'--additional-hooks-dir={os.path.join(os.getcwd(), "scripts")}',
         ]
         
         for item in data_to_add:

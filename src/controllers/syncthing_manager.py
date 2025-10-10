@@ -19,8 +19,9 @@ class SyncthingManager:
         self.is_running = False
         
         self.app_data_path = os.path.join(os.getenv('APPDATA'), 'NydusNet')
+        #self.app_data_path = os.getcwd()
         self.sync_folder_path = os.path.join(self.app_data_path, 'SyncData')
-        self.syncthing_exe_path = os.path.join(os.getcwd(), "resources", "syncthing", "syncthing.exe")
+        self.syncthing_exe_path = os.path.join(os.getcwd(), "syncthing", "syncthing.exe")
         self.folder_label = "NydusNetConfig"
         
     def start(self, base_port=8385, max_retries=10) -> bool:
