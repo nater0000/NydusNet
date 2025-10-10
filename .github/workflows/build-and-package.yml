@@ -38,3 +38,9 @@ jobs:
         with:
           name: nydusnet-installer
           path: Output/
+          
+      - name: Upload application artifact 📤
+        uses: actions/upload-artifact@v4
+        with:
+          name: nydusnet-app
+          path: dist/
