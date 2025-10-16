@@ -19,9 +19,7 @@ classifiers = [
 
 # Runtime dependencies (replaces requirements.txt)
 dependencies = [
-    "ansible",
-    "windows-curses ; sys_platform == 'win32'",
-    "wcwidth",
+    "fabric",
     "customtkinter",
     "syncthing",
     "diff-match-patch",
@@ -32,6 +30,8 @@ dependencies = [
     "Pillow",
     "PyInstaller",
     "toml",
+    "pystray",
+    "emoji",
 ]
 
 [project.urls]

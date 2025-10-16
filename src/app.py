@@ -1,171 +1,213 @@
 import customtkinter as ctk
 import logging
+import threading
+import os
+import socket
+from PIL import Image
+import pystray
+from tkinter import filedialog
+
 from views.dashboard_view import DashboardView
 from views.settings_view import SettingsView
 from views.history_view import HistoryView
-from views.dialogs import UnlockDialog, ServerDialog, TunnelDialog, InviteDialog, ConfirmationDialog, RecoveryKeyDialog, ErrorDialog
+from views.debug_view import DebugView
+from views.dialogs import (
+    UnlockDialog, ServerDialog, TunnelDialog, InviteDialog,
+    ConfirmationDialog, RecoveryKeyDialog, ErrorDialog, LoadingDialog, LogViewerDialog
+)
 
 from controllers.config_manager import ConfigManager
 from controllers.tunnel_manager import TunnelManager
 from controllers.syncthing_manager import SyncthingManager
-from controllers.ansible_manager import AnsibleManager
+from utils.crypto import CryptoManager
 
 class App(ctk.CTk):
-    """
-    The main application class. Acts as the central controller, managing the UI
-    and coordinating all backend logic.
-    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.title("NydusNet")
-        self.geometry("900x650")
+        self.geometry("950x700")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.is_unlocked = False
+        self.is_shutting_down = False
 
-        # --- Initialize Backend Controllers ---
         self.config_manager = ConfigManager(self)
         self.syncthing_manager = SyncthingManager(self)
         self.tunnel_manager = TunnelManager(self)
-        self.ansible_manager = AnsibleManager(self)
-        
-        # --- Initialize UI Frames (Views) ---
+        self.crypto_manager = CryptoManager()
+
         container = ctk.CTkFrame(self)
         container.pack(side="top", fill="both", expand=True)
-        container.grid_row_configure(0, weight=1)
-        container.grid_column_configure(0, weight=1)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (DashboardView, SettingsView, HistoryView):
+        for F in (DashboardView, SettingsView, HistoryView, DebugView):
             page_name = F.__name__
             frame = F(parent=container, controller=self)
             self.frames[page_name] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
-        # --- Application Startup ---
-        # Start the unlock process immediately
+        self.withdraw()
         self.after(100, self.show_unlock_dialog)
+        self.tray_icon = None
+
+    def _setup_tray_icon(self):
+        try:
+            # Use a path relative to this file's location
+            base_path = os.path.abspath(os.path.dirname(__file__))
+            icon_path = os.path.join(base_path, "..", "resources", "images", "nydusnet.ico")
+            icon_image = Image.open(icon_path)
+        except Exception:
+            logging.warning("System tray icon not found, using a placeholder.")
+            icon_image = Image.new('RGB', (64, 64), color='blue')
+
+        menu = (
+            pystray.MenuItem('Show', self.show_window, default=True),
+            pystray.MenuItem('Quit', self.quit_application)
+        )
+        self.tray_icon = pystray.Icon("NydusNet", icon_image, "NydusNet", menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def quit_application(self):
+        logging.info("Quit command received from tray icon.")
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.on_closing(force_quit=True)
+
+    def on_closing(self, force_quit=False):
+        if force_quit:
+            if not self.is_shutting_down:
+                self.is_shutting_down = True
+                logging.info("Application closing. Shutting down services...")
+                if self.is_unlocked:
+                    self.tunnel_manager.stop()
+                    self.syncthing_manager.stop()
+                self.after(200, self.destroy)
+        else:
+            logging.info("Minimizing to system tray.")
+            self.withdraw()
+            
+    def on_syncthing_id_ready(self):
+        """Callback from SyncthingManager when the device ID is available."""
+        logging.info(f"Syncthing ID is ready. Triggering UI refresh.")
+        settings_view = self.frames.get("SettingsView")
+        if settings_view:
+            # Use after() to ensure this runs on the main UI thread
+            self.after(0, settings_view.enter)
 
     def show_unlock_dialog(self):
-        """Shows the unlock dialog and waits for user input."""
         if self.is_unlocked: return
-        
         is_first_run = not self.config_manager.is_configured()
-        
         dialog = UnlockDialog(self, first_run=is_first_run, controller=self)
         password = dialog.get_input()
-        
-        if password is None: # User closed the dialog
+
+        if password is None:
             self.destroy()
             return
-        
+
         if is_first_run:
             self.handle_first_run(password)
         else:
             self.attempt_unlock(password)
 
     def handle_first_run(self, password: str):
-        """
-        Handles the special logic for the very first run, including generating
-        and displaying the recovery key.
-        """
-        logging.info("First-time setup: A new master password is being created.")
-        
-        if self.config_manager.unlock_with_password(password):
-            recovery_key = self.config_manager.crypto_manager.generate_recovery_key()
-            self.config_manager.save_recovery_key(recovery_key, password)
-            RecoveryKeyDialog(self, recovery_key=recovery_key)
-            
-            logging.info("First-time setup complete. Starting backend services.")
+        unlock_successful, recovery_key = self.config_manager.unlock_with_password(password)
+        if unlock_successful:
             self.is_unlocked = True
-            if not self.syncthing_manager.start():
-                 ErrorDialog(self, message="Syncthing failed to start. Please check the logs.")
-                 return # Don't proceed if core service fails
-            self.show_frame("DashboardView")
+
+            logging.info("First run: Generating and saving SSH key pair for automation.")
+            priv_path, pub_path = self.crypto_manager.generate_ssh_key_pair()
+            self.save_or_update_automation_credentials(priv_path, pub_path)
+
+            key_dialog = RecoveryKeyDialog(self, recovery_key=recovery_key)
+            key_dialog.get_input()
+
+            if not self.tray_icon: self._setup_tray_icon()
+            self._start_backend_services_threaded()
         else:
-            logging.warning("First-time password creation failed.")
-            ErrorDialog(self, message="Failed to create password. Please try again.")
+            self.show_error("Failed to create password. Please try again.")
             self.show_unlock_dialog()
 
     def attempt_unlock(self, password: str):
-        """
-        Attempts to decrypt the configuration. If successful, starts backend services
-        and shows the dashboard. If not, re-prompts for the password.
-        """
-        if self.config_manager.unlock_with_password(password):
-            logging.info("Unlock successful. Starting backend services.")
+        unlock_successful, _ = self.config_manager.unlock_with_password(password)
+        if unlock_successful:
             self.is_unlocked = True
-            if not self.syncthing_manager.start():
-                 ErrorDialog(self, message="Syncthing failed to start. Please check the logs.")
-                 return
-            self.show_frame("DashboardView")
+            if not self.tray_icon: self._setup_tray_icon()
+            self._start_backend_services_threaded()
         else:
-            logging.warning("Unlock failed: incorrect master password.")
-            ErrorDialog(self, message="Incorrect master password. Please try again.")
+            self.show_error("Incorrect master password. Please try again.")
             self.show_unlock_dialog()
 
+    def _start_backend_services_threaded(self):
+        loading_dialog = LoadingDialog(self)
+        def service_starter():
+            if not self.syncthing_manager.start():
+                self.after(0, loading_dialog.destroy)
+                self.after(0, lambda: self.show_error("Syncthing failed to start. Check logs."))
+                self.after(0, self.destroy)
+            else:
+                self.after(0, loading_dialog.destroy)
+                self.after(0, self.deiconify)
+                self.after(0, lambda: self.show_frame("DashboardView"))
+        threading.Thread(target=service_starter, daemon=True).start()
+
     def forgot_password(self):
-        """
-        Starts the password reset workflow.
-        """
         logging.info("Starting password reset workflow.")
-        
-        # Step 1: Prompt the user to enter their recovery key.
         recovery_dialog = RecoveryKeyDialog(self, title="Password Reset", input_mode=True)
         recovery_key = recovery_dialog.get_input()
-        if not recovery_key: return # User cancelled
+        if not recovery_key: return
 
-        # Step 2: Prompt for a new password.
         new_password_dialog = UnlockDialog(self, first_run=True, title="Create New Master Password")
         new_password = new_password_dialog.get_input()
-        if not new_password: return # User cancelled
+        if not new_password: return
         
-        # Step 3: Call the config manager to perform the re-encryption.
         if self.config_manager.re_encrypt_with_new_password(old_key=recovery_key, new_password=new_password):
             logging.info("Password successfully reset. Attempting to unlock with the new password.")
             self.attempt_unlock(new_password)
         else:
-            logging.error("Password reset failed. The recovery key was likely incorrect.")
-            ErrorDialog(self, message="Password reset failed. The recovery key was incorrect.")
+            self.show_error("Password reset failed. The recovery key was likely incorrect.")
             self.show_unlock_dialog()
 
     def change_master_password(self):
-        """
-        Allows the user to change their master password.
-        """
         logging.info("Starting master password change workflow.")
-
         old_password_dialog = UnlockDialog(self, title="Enter Old Master Password")
         old_password = old_password_dialog.get_input()
         if not old_password: return
+        
+        try:
+            with open(self.config_manager.check_file, 'rb') as f:
+                encrypted_check_data = f.read()
+            
+            if self.config_manager.crypto_manager.decrypt_data(encrypted_check_data, old_password):
+                new_password_dialog = UnlockDialog(self, first_run=True, title="Enter New Master Password")
+                new_password = new_password_dialog.get_input()
+                if not new_password: return
 
-        if self.config_manager.unlock_with_password(old_password):
-            new_password_dialog = UnlockDialog(self, first_run=True, title="Enter New Master Password")
-            new_password = new_password_dialog.get_input()
-            if not new_password: return
-
-            if self.config_manager.re_encrypt_with_new_password(old_key=old_password, new_password=new_password):
-                ConfirmationDialog(self, message="Password successfully changed!")
+                if self.config_manager.re_encrypt_with_new_password(old_key=old_password, new_password=new_password):
+                    ConfirmationDialog(self, title="Success", message="Password successfully changed!")
+                else:
+                    self.show_error("Failed to change password during re-encryption.")
             else:
-                ErrorDialog(self, message="Failed to change password. The new password could not be applied.")
-        else:
-            ErrorDialog(self, message="Incorrect old password.")
+                self.show_error("Incorrect old password.")
+        except Exception as e:
+            self.show_error(f"An error occurred: {e}")
 
     def view_recovery_key(self):
-        """
-        Retrieves and displays the recovery key to the user.
-        """
         logging.info("Attempting to display recovery key.")
         recovery_key = self.config_manager.get_recovery_key()
         if recovery_key:
             RecoveryKeyDialog(self, recovery_key=recovery_key)
         else:
-            ErrorDialog(self, message="Recovery key not found or could not be decrypted.")
-        
+            self.show_error("Recovery key not found or could not be decrypted.")
+
     def show_frame(self, page_name: str):
-        """Raises the given frame to the top so it's visible."""
-        if not self.is_unlocked: return # Prevent showing frames before unlock
-        
+        if not self.is_unlocked: return
         logging.info(f"Switching to view: {page_name}")
         frame = self.frames[page_name]
         if hasattr(frame, 'enter') and callable(getattr(frame, 'enter')):
@@ -173,34 +215,67 @@ class App(ctk.CTk):
         frame.tkraise()
 
     def refresh_dashboard(self):
-        """Safely triggers a refresh of the dashboard from any thread."""
+        if self.is_shutting_down:
+            logging.info("Skipping dashboard refresh during shutdown.")
+            return
         dashboard = self.frames.get("DashboardView")
         if dashboard and self.is_unlocked:
             self.after(0, dashboard.load_tunnels)
 
-    def on_closing(self):
-        """Handles the application shutdown sequence."""
-        logging.info("Application closing. Shutting down services...")
-        if self.is_unlocked:
-            self.tunnel_manager.stop_all_tunnels()
-            self.syncthing_manager.stop()
-        self.destroy()
+    def show_error(self, message: str):
+        ErrorDialog(self, message=message)
+        
+    def set_appearance_mode(self, mode: str):
+        """Sets the global appearance mode for the application."""
+        logging.info(f"Setting appearance mode to: {mode}")
+        ctk.set_appearance_mode(mode)
 
     # --- Controller Passthrough Methods ---
-    # These are called by the Views and delegate work to the backend managers.
-
-    # Config Manager Methods
+    def get_all_objects_for_debug(self): return self.config_manager.get_all_objects_for_debug()
+    def get_object_by_id(self, obj_id: str): return self.config_manager.get_object_by_id(obj_id)
     def get_tunnels(self): return self.config_manager.get_tunnels()
     def get_servers(self): return self.config_manager.get_servers()
     def get_clients(self): return self.config_manager.get_clients()
     def get_server_name(self, server_id): return self.config_manager.get_server_name(server_id)
+    def get_client_name(self, client_id): return self.config_manager.get_client_name(client_id)
     def get_automation_credentials(self): return self.config_manager.get_automation_credentials()
+    def get_my_device_id(self): return self.syncthing_manager.my_device_id
+    
+    def get_my_device_name(self):
+        try:
+            return socket.gethostname()
+        except Exception:
+            return "Unknown Device"
+
+    def get_clients_for_dropdown(self) -> tuple[dict, list]:
+        clients = self.get_clients()
+        my_id = self.get_my_device_id()
+        my_name_display = f"{self.get_my_device_name()} (This Device)"
+
+        client_map = {my_name_display: my_id}
+        for client in clients:
+            if client.get('syncthing_id') != my_id:
+                name = client.get('name', client.get('syncthing_id', 'Unknown'))
+                client_map[name] = client.get('syncthing_id')
+
+        return client_map, sorted(list(client_map.keys()))
+
+    def save_or_update_automation_credentials(self, private_key_path: str, public_key_path: str):
+        self.config_manager.save_or_update_automation_credentials(private_key_path, public_key_path)
+
+    def browse_for_file(self, title="Select a file"):
+        return filedialog.askopenfilename(title=title)
 
     def add_new_tunnel(self):
+        if not self.get_servers():
+            self.show_error("You must add a Server in Settings before creating a tunnel.")
+            return
         dialog = TunnelDialog(self, controller=self, title="Add New Tunnel")
         data = dialog.get_input()
         if data:
-            self.config_manager.add_object('tunnel', data)
+            new_id = self.config_manager.add_object('tunnel', data)
+            if data.get('enabled') and data.get('assigned_client_id') == self.get_my_device_id():
+                self.start_tunnel(new_id)
             self.refresh_dashboard()
 
     def edit_tunnel(self, tunnel_id):
@@ -210,47 +285,74 @@ class App(ctk.CTk):
         if new_data:
             self.config_manager.update_object(tunnel_id, new_data)
             self.refresh_dashboard()
-            
-    # Tunnel Manager Methods
-    def start_tunnel(self, tunnel_id): 
-        if not self.tunnel_manager.start_tunnel(tunnel_id):
-            ErrorDialog(self, message="Failed to start tunnel. Check logs for details.")
+
+    def delete_tunnel(self, tunnel_id):
+        tunnel = self.get_object_by_id(tunnel_id)
+        if not tunnel: return
+        dialog = ConfirmationDialog(self, message=f"Delete tunnel '{tunnel.get('hostname')}'?")
+        if dialog.get_input():
+            self.stop_tunnel(tunnel_id)
+            self.config_manager.delete_object(tunnel_id)
+            self.refresh_dashboard()
+
+    def view_tunnel_log(self, tunnel_id: str):
+        logs = self.tunnel_manager.get_tunnel_log(tunnel_id)
+        tunnel = self.get_object_by_id(tunnel_id)
+        title = f"Logs for {tunnel.get('hostname', tunnel_id[:8])}"
+        LogViewerDialog(self, log_content=logs, title=title)
+
+    def start_tunnel(self, tunnel_id: str):
+        success, message = self.tunnel_manager.start_tunnel(tunnel_id)
+        if not success:
+            self.show_error(message)
         self.refresh_dashboard()
-    def stop_tunnel(self, tunnel_id): 
+
+    def stop_tunnel(self, tunnel_id: str):
         self.tunnel_manager.stop_tunnel(tunnel_id)
         self.refresh_dashboard()
+
     def start_all_tunnels(self): self.tunnel_manager.start_all_tunnels()
     def stop_all_tunnels(self): self.tunnel_manager.stop_all_tunnels()
     def get_tunnel_statuses(self): return self.tunnel_manager.get_tunnel_statuses()
 
-    # Syncthing Manager Methods
     def add_new_device(self):
         invite_string = self.syncthing_manager.generate_invite()
         if invite_string:
-            InviteDialog(self, invite_string=invite_string) # This dialog is view-only
-        
-    # Ansible Manager Methods
+            InviteDialog(self, invite_string=invite_string)
+
     def add_new_server(self):
-        dialog = ServerDialog(self, title="Add & Provision New Server")
+        dialog = ServerDialog(self, title="Add New Server")
         server_info = dialog.get_input()
         if server_info:
-            server_id = self.config_manager.add_object('server', server_info)
-            
-            log_window = ctk.CTkToplevel(self)
-            log_window.title(f"Provisioning {server_info['name']}...")
-            log_textbox = ctk.CTkTextbox(log_window, width=700, height=400)
-            log_textbox.pack(fill="both", expand=True)
-            
-            def log_callback(message):
-                log_textbox.insert("end", message + "\n")
-                log_textbox.see("end")
+            self.config_manager.add_object('server', server_info)
+            self.frames["SettingsView"].enter()
 
-                if message.startswith("ERROR:"):
-                    ErrorDialog(self, message.replace("ERROR: ", ""))
+    def edit_server(self, server_id):
+        server_data = self.config_manager.get_object_by_id(server_id)
+        dialog = ServerDialog(self, title="Edit Server", initial_data=server_data)
+        new_data = dialog.get_input()
+        if new_data:
+            self.config_manager.update_object(server_id, new_data)
+            self.frames["SettingsView"].enter()
 
-            self.ansible_manager.provision_server(server_id, log_callback)
+    def delete_server(self, server_id):
+        server_name = self.config_manager.get_server_name(server_id)
+        dialog = ConfirmationDialog(self, message=f"Delete server '{server_name}'?")
+        if dialog.get_input():
+            self.config_manager.delete_object(server_id)
+            self.frames["SettingsView"].enter()
 
-    # History Methods
+    def remove_client(self, client_id):
+        client_name = self.get_client_name(client_id)
+        dialog = ConfirmationDialog(self, message=f"Remove device '{client_name}'?")
+        if dialog.get_input():
+            self.syncthing_manager.remove_device(client_id)
+            client_to_delete = next((c for c in self.get_clients() if c.get('syncthing_id') == client_id), None)
+            if client_to_delete:
+                self.config_manager.delete_object(client_to_delete['id'])
+            self.frames["SettingsView"].enter()
+
     def get_history_file_index(self): return self.config_manager.get_history_file_index()
     def get_file_version_history(self, file_id): return self.config_manager.get_file_version_history(file_id)
     def get_file_content_at_version(self, file_id, timestamp): return self.config_manager.get_file_content_at_version(file_id, timestamp)
+

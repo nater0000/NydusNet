@@ -11,7 +11,7 @@ class HistoryView(ctk.CTkFrame):
         self.controller = controller
 
         self.grid_columnconfigure(2, weight=1) # Right-most column expands
-        self.grid_row_configure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
         # --- Top Control Bar ---
         top_frame = ctk.CTkFrame(self)

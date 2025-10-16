@@ -5,10 +5,9 @@ import zipfile
 import io
 import logging
 import toml
-import subprocess
 import shutil
+import tempfile
 
-# Configure basic logging to see the download progress
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_config_value(key: str) -> str:
@@ -21,98 +20,72 @@ def get_config_value(key: str) -> str:
         logging.error(f"Failed to read '{key}' from pyproject.toml: {e}")
         return None
 
+
 def download_syncthing(version: str):
-    """
-    Downloads the Syncthing executable for Windows if it doesn't already exist.
-    """
+    """Downloads and extracts the full Syncthing package if it doesn't already exist."""
     if not version:
         logging.error("No Syncthing version provided. Aborting download.")
         return False
 
     url = f"https://github.com/syncthing/syncthing/releases/download/{version}/syncthing-windows-amd64-{version}.zip"
-    
-    # Define the target directory and file path
     syncthing_dir = os.path.join('resources', 'syncthing')
     syncthing_exe_path = os.path.join(syncthing_dir, 'syncthing.exe')
-    
-    # Check if the executable already exists
+
     if os.path.exists(syncthing_exe_path):
         logging.info("Syncthing executable already exists. Skipping download.")
         return True
 
-    logging.info(f"Syncthing executable not found. Downloading from {url}...")
-    
+    logging.info(f"Syncthing not found. Downloading and extracting from {url}...")
     os.makedirs(syncthing_dir, exist_ok=True)
-    
+
     try:
         response = requests.get(url, stream=True)
-        response.raise_for_status() # Raise an exception for bad status codes
-        
-        # Use a BytesIO object to handle the zip file in memory
-        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
-            # Find the executable within the zip
-            for file_info in zip_ref.infolist():
-                if file_info.filename.endswith('syncthing.exe'):
-                    logging.info("Found syncthing.exe in zip. Extracting...")
-                    # Extract the file directly to the target path
-                    with open(syncthing_exe_path, 'wb') as f:
-                        f.write(zip_ref.read(file_info.filename))
-                    logging.info("Syncthing executable downloaded and extracted successfully.")
-                    return True
-        
-        logging.error("syncthing.exe was not found inside the downloaded zip file.")
-        return False
-        
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to download Syncthing: {e}")
-        return False
-    except zipfile.BadZipFile:
-        logging.error("Downloaded file is not a valid zip archive.")
+        response.raise_for_status()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+                zip_ref.extractall(temp_dir)
+
+            # The zip extracts to a subfolder, e.g., 'syncthing-windows-amd64-v1.27.7'
+            # We need to find that subfolder and move its contents.
+            extracted_folder_name = zip_ref.infolist()[0].filename.split('/')[0]
+            source_folder = os.path.join(temp_dir, extracted_folder_name)
+
+            # Copy all files from the extracted folder to our target directory
+            for item in os.listdir(source_folder):
+                s = os.path.join(source_folder, item)
+                d = os.path.join(syncthing_dir, item)
+                if os.path.isfile(s):
+                    shutil.copy2(s, d)
+
+        if os.path.exists(syncthing_exe_path):
+            logging.info("Syncthing package downloaded and extracted successfully.")
+            return True
+        else:
+            logging.error("Extraction failed: syncthing.exe not found after process.")
+            return False
+
+    except (requests.exceptions.RequestException, zipfile.BadZipFile, IndexError) as e:
+        logging.error(f"Failed during Syncthing download/extraction: {e}")
         return False
 
 if __name__ == '__main__':
     syncthing_version = get_config_value('syncthing_version')
-
-    try:
-        with open('pyproject.toml', 'r') as f:
-            project_data = toml.load(f)
-            app_version = project_data['project']['version']
-    except (FileNotFoundError, KeyError) as e:
-        logging.error(f"Failed to read app version from pyproject.toml: {e}")
-        app_version = None
-
-    if not syncthing_version or not app_version:
-        logging.error("Required version information not found. Build aborted.")
+    if not syncthing_version:
+        logging.error("Build aborted: Syncthing version not found in pyproject.toml.")
     elif not download_syncthing(syncthing_version):
-        logging.error("Build process aborted because Syncthing executable could not be downloaded.")
+        logging.error("Build process aborted because Syncthing could not be downloaded.")
     else:
-        # Define the application's entry point
-        main_script = 'src/main.py'
-        
-        # Define the application name
-        app_name = 'NydusNet'
-        
-        # Define any additional data files or directories to include
-        # This ensures syncthing.exe and the ansible folder are bundled.
-        data_to_add = [
-            os.path.join('resources', 'syncthing'),
-            os.path.join('resources', 'ansible')
-        ]
-        
         pyinstaller_args = [
-            main_script,
-            '--name', app_name,
+            'src/main.py',
+            '--name', 'NydusNet',
             '--onefile',
             '--windowed',
             '--noconfirm',
             '--clean',
-            '--paths', os.path.join(os.getcwd(), "src", "mocks"),
-            f'--additional-hooks-dir={os.path.join(os.getcwd(), "scripts")}',
+            '--add-data', f'resources/syncthing{os.pathsep}syncthing'
         ]
-        
-        for item in data_to_add:
-            pyinstaller_args.extend(['--add-data', f'{item}{os.pathsep}{item}'])
             
         logging.info(f"Running PyInstaller with args: {' '.join(pyinstaller_args)}")
-        
         PyInstaller.__main__.run(pyinstaller_args)
+        logging.info("PyInstaller build complete.")

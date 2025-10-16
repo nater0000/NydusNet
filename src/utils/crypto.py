@@ -1,6 +1,7 @@
 import os
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet, InvalidToken
 import base64
@@ -100,3 +101,45 @@ class CryptoManager:
         if decrypted_data:
             return self.encrypt_data(decrypted_data, new_password)
         return None
+
+    def generate_ssh_key_pair(self) -> tuple[str, str]:
+        """
+        Generates a new RSA SSH key pair and saves them to the app's data directory.
+        Returns the file paths to the private and public keys.
+        """
+        keys_dir = os.path.join(os.getenv('APPDATA'), 'NydusNet', 'ssh_keys')
+        os.makedirs(keys_dir, exist_ok=True)
+        
+        private_key_path = os.path.join(keys_dir, 'id_rsa')
+        public_key_path = os.path.join(keys_dir, 'id_rsa.pub')
+
+        if os.path.exists(private_key_path):
+            logging.warning(f"SSH key pair already exists at {keys_dir}. Skipping generation.")
+            return private_key_path, public_key_path
+
+        logging.info(f"Generating new SSH key pair at {keys_dir}")
+        
+        private_key = rsa.generate_private_key(
+            public_exponent=65537, 
+            key_size=2048,
+            backend=default_backend()
+        )
+
+        # Save the private key in PEM format (standard for SSH)
+        with open(private_key_path, 'wb') as f:
+            f.write(private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+        
+        # Save the public key in OpenSSH format
+        public_key = private_key.public_key()
+        with open(public_key_path, 'wb') as f:
+            f.write(public_key.public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH
+            ))
+
+        return private_key_path, public_key_path
+
