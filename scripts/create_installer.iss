@@ -30,7 +30,7 @@ PrivilegesRequired=lowest
 Source: "{#RootDir}\dist\NydusNet.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Bundled data files and folders 
-Source: "{#RootDir}\dist\syncthing\*"; DestDir: "{app}\syncthing"; Flags: recursesubdirs createallsubdirs
+; Syncthing is now contained in the python app
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\NydusNet.exe"
