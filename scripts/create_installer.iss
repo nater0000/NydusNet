@@ -26,7 +26,7 @@ ChangesAssociations=yes
 PrivilegesRequired=lowest
 
 [Files]
-; Main executable built by PyInstaller [cite: 2]
+; Main executable built by PyInstaller
 Source: "{#RootDir}\dist\NydusNet.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Bundled data files and folders 
@@ -37,11 +37,11 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\NydusNet.exe"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\NydusNet.exe"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; [cite: 4]
+Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:";
 
 [Run]
-; Install OpenSSH Client (if missing) for the tunnel manager [cite: 5]
+; Install OpenSSH Client (if missing) for the tunnel manager
 Filename: "DISM.exe"; Parameters: "/Online /Add-Capability /CapabilityName:OpenSSH.Client~~~~0.0.1.0"; \
     Description: "Install OpenSSH Client (if missing)"; Flags: runhidden shellexec
-; Launch the application after installation [cite: 6]
+; Launch the application after installation
 Filename: "{app}\NydusNet.exe"; Description: "Launch NydusNet"; Flags: nowait postinstall shellexec
