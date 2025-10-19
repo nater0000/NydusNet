@@ -1,14 +1,12 @@
 import customtkinter as ctk
 import logging
-from .dialogs import ToolTip 
+from .dialogs import ToolTip
 
 class DashboardView(ctk.CTkFrame):
-    """
-    The main view of the application, displaying the list of tunnels and global controls.
-    """
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.tooltips = []
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -16,115 +14,104 @@ class DashboardView(ctk.CTkFrame):
         # --- Top Control Frame ---
         self.control_frame = ctk.CTkFrame(self)
         self.control_frame.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="ew")
-        
-        # --- EMOJI / ICON BUTTONS with Tooltips for a cleaner look ---
-        self.start_all_btn = ctk.CTkButton(self.control_frame, text="▶️ Start All", command=self.controller.start_all_tunnels)
-        self.start_all_btn.pack(side="left", padx=5, pady=5)
-        
-        self.stop_all_btn = ctk.CTkButton(self.control_frame, text="⏹️ Stop All", command=self._on_stop_all_clicked)
-        self.stop_all_btn.pack(side="left", padx=5, pady=5)
-        
-        self.add_tunnel_btn = ctk.CTkButton(self.control_frame, text="➕ Add Tunnel", command=self.controller.add_new_tunnel)
-        self.add_tunnel_btn.pack(side="left", padx=5, pady=5)
 
-        # Navigation buttons
-        self.debug_btn = ctk.CTkButton(self.control_frame, text="🐞 Debug",
-                                         command=lambda: self.controller.show_frame("DebugView"))
-        self.debug_btn.pack(side="right", padx=5, pady=5)
+        ctk.CTkButton(self.control_frame, text="▶️ Start All", command=self.controller.start_all_tunnels).pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(self.control_frame, text="⏹️ Stop All", command=self._on_stop_all_clicked).pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(self.control_frame, text="➕ Add Tunnel", command=self.controller.add_new_tunnel).pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(self.control_frame, text="🐞 Debug", command=lambda: self.controller.show_frame("DebugView")).pack(side="right", padx=5, pady=5)
+        ctk.CTkButton(self.control_frame, text="📜 History", command=lambda: self.controller.show_frame("HistoryView")).pack(side="right", padx=5, pady=5)
+        ctk.CTkButton(self.control_frame, text="⚙️ Settings", command=lambda: self.controller.show_frame("SettingsView")).pack(side="right", padx=5, pady=5)
         
-        self.history_btn = ctk.CTkButton(self.control_frame, text="📜 History",
-                                         command=lambda: self.controller.show_frame("HistoryView"))
-        self.history_btn.pack(side="right", padx=5, pady=5)
+        # --- A container for the list that will be recreated ---
+        self.list_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.list_container.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.list_container.grid_rowconfigure(0, weight=1)
+        self.list_container.grid_columnconfigure(0, weight=1)
 
-        self.settings_btn = ctk.CTkButton(self.control_frame, text="⚙️ Settings",
-                                          command=lambda: self.controller.show_frame("SettingsView"))
-        self.settings_btn.pack(side="right", padx=5, pady=5)
-        
-        # --- Tunnel List Frame ---
-        self.tunnel_list_frame = ctk.CTkScrollableFrame(self, label_text="Tunnels")
-        self.tunnel_list_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        self.tunnel_list_frame.grid_columnconfigure(1, weight=1)
-        self.tooltips = [] # To hold tooltip objects
+        self.tunnel_list_frame = None # Will be created/recreated in load_tunnels
 
     def enter(self):
-        """Called by the main controller whenever this view is shown."""
         self.load_tunnels()
 
     def _on_stop_all_clicked(self):
-        """Called when the 'Stop All' button is clicked to sequence actions."""
         self.controller.stop_all_tunnels()
         self.controller.refresh_dashboard()
         
     def load_tunnels(self):
-        """
-        Loads tunnel data from the config manager and populates the list.
-        """
         logging.info("Loading and displaying tunnels on the dashboard.")
         
-        # Clear previous widgets and tooltips
-        for widget in self.tunnel_list_frame.winfo_children():
-            widget.destroy()
+        # THE FIX: Destroy the entire old frame to prevent any race conditions
+        if self.tunnel_list_frame is not None:
+            self.tunnel_list_frame.destroy()
+        
+        # We don't need to destroy tooltips manually anymore, as they are children
+        # of the widgets inside the frame that is being destroyed. We just clear the list.
         self.tooltips.clear()
+
+        # Re-create a fresh scrollable frame in the container
+        self.tunnel_list_frame = ctk.CTkScrollableFrame(self.list_container, label_text="Tunnels")
+        self.tunnel_list_frame.grid(row=0, column=0, sticky="nsew")
+        self.tunnel_list_frame.grid_columnconfigure(0, weight=1)
 
         tunnels = self.controller.get_tunnels()
         tunnel_statuses = self.controller.get_tunnel_statuses()
         my_device_id = self.controller.get_my_device_id()
 
         if not tunnels:
-            no_tunnels_label = ctk.CTkLabel(self.tunnel_list_frame, text="No tunnels configured. Click 'Add New Tunnel' to get started.")
-            no_tunnels_label.pack(padx=20, pady=20)
+            ctk.CTkLabel(self.tunnel_list_frame, text="No tunnels configured.").pack(padx=20, pady=20)
             return
 
-        for i, tunnel in enumerate(tunnels):
-            tunnel_id = tunnel['id']
-            status = tunnel_statuses.get(tunnel_id, "stopped")
-            status_color = {"running": "green", "stopped": "gray", "error": "red"}.get(status, "gray")
-            
-            # --- Main Info Frame ---
-            info_frame = ctk.CTkFrame(self.tunnel_list_frame)
-            info_frame.grid(row=i, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-            info_frame.grid_columnconfigure(1, weight=1)
+        for tunnel in tunnels:
+            try:
+                tunnel_id = tunnel['id']
+                status = tunnel_statuses.get(tunnel_id, "stopped")
+                status_color = {"running": "#2ECC71", "connecting": "#F39C12", "stopped": "gray50", "error": "#E74C3C"}.get(status, "gray50")
+                is_managed_by_me = tunnel.get('assigned_client_id') == my_device_id
+                is_unassigned = not tunnel.get('assigned_client_id')
 
-            status_indicator = ctk.CTkLabel(info_frame, text="●", text_color=status_color, font=("", 24))
-            status_indicator.grid(row=0, column=0, rowspan=2, padx=(10, 5), pady=5)
-            
-            server_name = self.controller.get_server_name(tunnel.get('server_id'))
-            info_text = f"{tunnel['hostname']}  ->  {tunnel['local_destination']}  (on {server_name})"
-            info_label = ctk.CTkLabel(info_frame, text=info_text, anchor="w")
-            info_label.grid(row=0, column=1, padx=10, pady=(5,0), sticky="ew")
+                item_frame = ctk.CTkFrame(self.tunnel_list_frame)
+                item_frame.pack(fill="x", pady=5, padx=5)
+                item_frame.grid_columnconfigure(1, weight=1)
 
-            # --- Managed By Label ---
-            assigned_client_id = tunnel.get('assigned_client_id')
-            client_name = self.controller.get_client_name(assigned_client_id)
-            managed_by_text = f"Managed by: {client_name or 'ANY DEVICE'}"
-            managed_by_label = ctk.CTkLabel(info_frame, text=managed_by_text, text_color="gray", font=("", 10), anchor="w")
-            managed_by_label.grid(row=1, column=1, padx=10, pady=(0,5), sticky="ew")
-            
-            # --- Control Buttons Frame ---
-            button_frame = ctk.CTkFrame(self.tunnel_list_frame)
-            button_frame.grid(row=i, column=2, padx=10, pady=5, sticky="e")
-            
-            is_assigned_to_this_device = (assigned_client_id is None or assigned_client_id == my_device_id)
-            button_state = "normal" if is_assigned_to_this_device else "disabled"
+                status_indicator = ctk.CTkLabel(item_frame, text="●", text_color=status_color, font=("", 30))
+                status_indicator.grid(row=0, column=0, rowspan=2, padx=(10, 15), pady=5, sticky="ns")
+                self.tooltips.append(ToolTip(status_indicator, f"Status: {status.capitalize()}"))
+                
+                server_name = self.controller.get_server_name(tunnel.get('server_id', ''))
+                info_text = f"{tunnel.get('hostname','N/A')} -> {tunnel.get('local_destination','N/A')} (via {server_name})"
+                info_label = ctk.CTkLabel(item_frame, text=info_text, anchor="w", font=ctk.CTkFont(size=14, weight="bold"))
+                info_label.grid(row=0, column=1, sticky="ew", padx=5, pady=(5,0))
 
-            # --- Icon Buttons with Text Fallback and Tooltips ---
-            if status == 'running':
-                start_stop_btn = ctk.CTkButton(button_frame, text="⏹️", width=30, command=lambda tid=tunnel_id: self.controller.stop_tunnel(tid), state=button_state)
-                self.tooltips.append(ToolTip(start_stop_btn, "Stop Tunnel"))
-            else:
-                start_stop_btn = ctk.CTkButton(button_frame, text="▶️", width=30, command=lambda tid=tunnel_id: self.controller.start_tunnel(tid), state=button_state)
-                self.tooltips.append(ToolTip(start_stop_btn, "Start Tunnel"))
-            start_stop_btn.pack(side="left", padx=5)
+                assigned_client_name = self.controller.get_client_name(tunnel.get('assigned_client_id')) or "ANY DEVICE"
+                manager_label = ctk.CTkLabel(item_frame, text=f"Managed by: {assigned_client_name}", anchor="w", text_color="gray60")
+                manager_label.grid(row=1, column=1, sticky="ew", padx=5, pady=(0,5))
+                
+                button_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
+                button_frame.grid(row=0, column=2, rowspan=2, padx=10, sticky="ns")
 
-            edit_btn = ctk.CTkButton(button_frame, text="✏️", width=30, command=lambda tid=tunnel_id: self.controller.edit_tunnel(tid))
-            self.tooltips.append(ToolTip(edit_btn, "Edit Tunnel"))
-            edit_btn.pack(side="left", padx=5)
-            
-            logs_btn = ctk.CTkButton(button_frame, text="📄", width=30, command=lambda tid=tunnel_id: self.controller.view_tunnel_log(tid))
-            self.tooltips.append(ToolTip(logs_btn, "View Logs"))
-            logs_btn.pack(side="left", padx=5)
-            
-            delete_btn = ctk.CTkButton(button_frame, text="🗑️", width=30, fg_color="red", hover_color="#C00000", command=lambda tid=tunnel_id: self.controller.delete_tunnel(tid))
-            self.tooltips.append(ToolTip(delete_btn, "Delete Tunnel"))
-            delete_btn.pack(side="left", padx=5)
+                btn_state = "normal" if (is_managed_by_me or is_unassigned) else "disabled"
+
+                if status in ['running', 'connecting']:
+                    start_stop_btn = ctk.CTkButton(button_frame, text="⏹️", width=35, command=lambda tid=tunnel_id: self.controller.stop_tunnel(tid), state=btn_state)
+                    self.tooltips.append(ToolTip(start_stop_btn, "Stop Tunnel"))
+                else:
+                    start_stop_btn = ctk.CTkButton(button_frame, text="▶️", width=35, command=lambda tid=tunnel_id: self.controller.start_tunnel(tid), state=btn_state)
+                    self.tooltips.append(ToolTip(start_stop_btn, "Start Tunnel"))
+                start_stop_btn.pack(side="left", padx=3)
+
+                edit_btn = ctk.CTkButton(button_frame, text="✏️", width=35, command=lambda tid=tunnel_id: self.controller.edit_tunnel(tid))
+                edit_btn.pack(side="left", padx=3)
+                self.tooltips.append(ToolTip(edit_btn, "Edit Tunnel"))
+
+                logs_btn = ctk.CTkButton(button_frame, text="📄", width=35, command=lambda tid=tunnel_id: self.controller.view_tunnel_log(tid))
+                logs_btn.pack(side="left", padx=3)
+                self.tooltips.append(ToolTip(logs_btn, "View Logs"))
+
+                delete_btn = ctk.CTkButton(button_frame, text="🗑️", width=35, fg_color="#D32F2F", hover_color="#B71C1C", command=lambda tid=tunnel_id: self.controller.delete_tunnel(tid))
+                delete_btn.pack(side="left", padx=3)
+                self.tooltips.append(ToolTip(delete_btn, "Delete Tunnel"))
+            except Exception as e:
+                logging.error(f"Error creating tunnel widget for ID {tunnel.get('id', 'UNKNOWN')}: {e}", exc_info=True)
+                error_label = ctk.CTkLabel(self.tunnel_list_frame, text=f"Error loading tunnel {tunnel.get('id', 'UNKNOWN')}", text_color="red")
+                error_label.pack(fill="x", pady=5, padx=5)
 

@@ -13,6 +13,7 @@ class ConfigManager:
         self.history_dir = os.path.join(self.sync_path, 'history')
         self.index_file = os.path.join(self.sync_path, '_index.json')
         self.check_file = os.path.join(self.sync_path, 'verification.dat')
+        self.credentials_file = os.path.join(self.sync_path, 'credentials.json')
         
         self.crypto_manager = CryptoManager()
         self.dmp = dmp_module.diff_match_patch()
@@ -20,15 +21,11 @@ class ConfigManager:
         self._master_password = None
         self._in_memory_state = {}
         self._file_index = {}
+        self._credentials = None
 
         os.makedirs(self.history_dir, exist_ok=True)
 
     def unlock_with_password(self, password: str) -> tuple[bool, str | None]:
-        """
-        Unlocks the configuration. On first run, it creates the config and
-        returns the new recovery key.
-        Returns: (bool: success, str|None: recovery_key)
-        """
         if not os.path.exists(self.check_file):
             logging.info("First-time setup: creating new configuration and check file.")
             self._master_password = password
@@ -60,72 +57,71 @@ class ConfigManager:
             return False, None
 
     def re_encrypt_with_new_password(self, old_key: str, new_password: str) -> bool:
-        """
-        Handles the complex process of re-encrypting all configuration files
-        and the recovery key with a new password.
-        """
         if not os.path.exists(self.check_file): return False
         try:
-            # Re-encrypt the verification file first
             with open(self.check_file, 'rb') as f:
                 encrypted_data = f.read()
             new_encrypted_data = self.crypto_manager.re_encrypt_with_new_password(encrypted_data, old_key, new_password)
             if not new_encrypted_data:
-                logging.error("Failed to re-encrypt verification file. Aborting password change.")
+                logging.error("Failed to re-encrypt verification file.")
                 return False
+            with open(self.check_file, 'wb') as f: f.write(new_encrypted_data)
 
-            # If verification re-encryption is successful, proceed with recovery key
             if not self.crypto_manager.re_encrypt_recovery_key(old_key, new_password):
-                 logging.error("Failed to re-encrypt recovery key. State might be inconsistent.")
+                 logging.error("Failed to re-encrypt recovery key.")
+
+            if os.path.exists(self.credentials_file):
+                with open(self.credentials_file, 'rb') as f:
+                    encrypted_creds = f.read()
+                new_encrypted_creds = self.crypto_manager.re_encrypt_with_new_password(encrypted_creds, old_key, new_password)
+                if new_encrypted_creds:
+                    with open(self.credentials_file, 'wb') as f:
+                        f.write(new_encrypted_creds)
+                else:
+                    logging.warning("Failed to re-encrypt credentials file.")
             
-            # Now, iterate through ALL patch files and re-encrypt them
-            logging.info("Re-encrypting all configuration patch files...")
             for filename in os.listdir(self.sync_path):
                 if filename.endswith('.patch'):
                     path = os.path.join(self.sync_path, filename)
-                    with open(path, 'rb') as f:
-                        encrypted_patch = f.read()
-                    
+                    with open(path, 'rb') as f: encrypted_patch = f.read()
                     new_encrypted_patch = self.crypto_manager.re_encrypt_with_new_password(encrypted_patch, old_key, new_password)
                     if new_encrypted_patch:
-                        with open(path, 'wb') as f:
-                            f.write(new_encrypted_patch)
-                    else:
-                        logging.warning(f"Failed to re-encrypt patch file: {filename}.")
-
-            # Finally, write the new verification file and update the in-memory password
-            with open(self.check_file, 'wb') as f:
-                f.write(new_encrypted_data)
+                        with open(path, 'wb') as f: f.write(new_encrypted_patch)
             
             self._master_password = new_password
             logging.info("All files re-encrypted successfully.")
             return True
-
         except Exception as e:
-            logging.error(f"Failed during password re-encryption process: {e}", exc_info=True)
+            logging.error(f"Failed during re-encryption: {e}", exc_info=True)
             return False
             
     def get_recovery_key(self) -> str | None:
-        if not self._master_password: 
-            logging.warning("Attempted to get recovery key before unlocking.")
-            return None
+        if not self._master_password: return None
         return self.crypto_manager.get_recovery_key(self._master_password)
 
     def load_configuration(self):
         logging.info("Reconstructing configuration state from history...")
         if not self._master_password: return
 
+        self._credentials = None
+        if os.path.exists(self.credentials_file):
+            try:
+                with open(self.credentials_file, 'rb') as f:
+                    encrypted_creds = f.read()
+                decrypted_bytes = self.crypto_manager.decrypt_data(encrypted_creds, self._master_password)
+                if decrypted_bytes:
+                    self._credentials = json.loads(decrypted_bytes.decode('utf-8'))
+            except Exception as e:
+                logging.error(f"Failed to load or decrypt credentials file: {e}")
+
         if os.path.exists(self.index_file):
             try:
                 with open(self.index_file, 'r', encoding='utf-8') as f:
                     self._file_index = json.load(f)
-            except json.JSONDecodeError:
-                logging.error("Failed to load file index, it may be corrupt.")
-                self._file_index = {}
-
+            except json.JSONDecodeError: self._file_index = {}
+        
         history_files = sorted(os.listdir(self.history_dir))
         self._in_memory_state = self._reconstruct_state_from_events(history_files)
-        
         logging.debug(f"Reconstructed state dump: {json.dumps(self._in_memory_state, indent=2)}")
         logging.info(f"Configuration loaded with {len(self._in_memory_state)} objects.")
 
@@ -147,8 +143,7 @@ class ConfigManager:
             reconstructed_content = ""
             for patch_file in patch_files:
                 path = os.path.join(self.sync_path, patch_file)
-                with open(path, 'rb') as f:
-                    encrypted_patch = f.read()
+                with open(path, 'rb') as f: encrypted_patch = f.read()
                 patch_text_bytes = self.crypto_manager.decrypt_data(encrypted_patch, self._master_password)
                 if patch_text_bytes:
                     try:
@@ -160,7 +155,7 @@ class ConfigManager:
             try:
                 state[file_id] = json.loads(reconstructed_content)
             except json.JSONDecodeError:
-                logging.error(f"Failed to decode reconstructed JSON for file ID {file_id}")
+                logging.error(f"Failed to decode reconstructed JSON for {file_id}")
         return state
 
     def _commit_event(self, action: str, file_id: str, content_delta_text: str = None):
@@ -181,24 +176,24 @@ class ConfigManager:
         data['id'] = obj_id
         data['type'] = obj_type
         
-        name = data.get('name') or data.get('hostname') or obj_type.replace('_', ' ').title()
+        if obj_type == 'server':
+            data['is_provisioned'] = data.get('is_provisioned', False)
+            data['tunnel_user'] = data.get('tunnel_user', "")
+
+        name = data.get('name') or data.get('hostname') or obj_type
         self._file_index[obj_id] = {"name": name, "type": obj_type}
         with open(self.index_file, 'w', encoding='utf-8') as f: json.dump(self._file_index, f, indent=2)
-
+        
         content_text = json.dumps(data, indent=2)
         patches = self.dmp.patch_make("", content_text)
         patch_text = self.dmp.patch_toText(patches)
-        
         self._commit_event('add', obj_id, patch_text)
         return obj_id
 
     def update_object(self, obj_id: str, new_data: dict):
         if obj_id not in self._in_memory_state: return
-        # Ensure 'type' and 'id' are preserved
-        if 'type' not in new_data:
-            new_data['type'] = self._in_memory_state[obj_id].get('type')
-        if 'id' not in new_data:
-            new_data['id'] = obj_id
+        if 'type' not in new_data: new_data['type'] = self._in_memory_state[obj_id].get('type')
+        if 'id' not in new_data: new_data['id'] = obj_id
         
         old_text = json.dumps(self._in_memory_state[obj_id], indent=2)
         new_text = json.dumps(new_data, indent=2)
@@ -212,24 +207,15 @@ class ConfigManager:
         if obj_id not in self._in_memory_state: return
         self._commit_event('remove', obj_id)
 
-    def get_all_objects_for_debug(self):
-        return self._in_memory_state
-
-    def get_object_by_id(self, obj_id: str): 
-        return self._in_memory_state.get(obj_id)
+    def get_all_objects_for_debug(self): return self._in_memory_state
+    def get_object_by_id(self, obj_id: str): return self._in_memory_state.get(obj_id)
 
     def get_tunnels(self):
-        tunnels = [
-            obj for obj in self._in_memory_state.values() 
-            if obj.get('type') == 'tunnel' or ('hostname' in obj and 'local_destination' in obj and not obj.get('type'))
-        ]
+        tunnels = [obj for obj in self._in_memory_state.values() if obj.get('type') == 'tunnel' or ('hostname' in obj and not obj.get('type'))]
         return sorted(tunnels, key=lambda x: x.get('hostname', '').lower())
 
     def get_servers(self):
-        servers = [
-            obj for obj in self._in_memory_state.values()
-            if obj.get('type') == 'server' or ('ip_address' in obj and 'user' in obj and not obj.get('type'))
-        ]
+        servers = [obj for obj in self._in_memory_state.values() if obj.get('type') == 'server' or ('ip_address' in obj and not obj.get('type'))]
         return sorted(servers, key=lambda x: x.get('name', '').lower())
     
     def get_clients(self): 
@@ -244,30 +230,28 @@ class ConfigManager:
     def get_client_name(self, client_id: str) -> str | None:
         if not client_id: return None
         my_id = self.controller.get_my_device_id()
-        if my_id and client_id == my_id:
-            return f"{self.controller.get_my_device_name()} (This Device)"
-        
+        if my_id and client_id == my_id: return f"{self.controller.get_my_device_name()} (This Device)"
         for client in self.get_clients():
-            if client.get('syncthing_id') == client_id:
-                return client.get('name', client_id)
+            if client.get('syncthing_id') == client_id: return client.get('name', client_id)
         return client_id[:12] + "..." if client_id else "Unknown"
 
     def get_automation_credentials(self):
-        for obj in self._in_memory_state.values():
-            if obj.get('type') == 'automation_credentials':
-                return obj
-        return None
+        return self._credentials
 
     def save_or_update_automation_credentials(self, private_key_path: str, public_key_path: str):
-        creds_obj = self.get_automation_credentials()
+        logging.info("Saving automation credentials to dedicated file.")
         new_data = {
             'ssh_private_key_path': private_key_path,
             'ssh_public_key_path': public_key_path
         }
-        if creds_obj:
-            self.update_object(creds_obj['id'], new_data)
-        else:
-            self.add_object('automation_credentials', new_data)
+        try:
+            creds_bytes = json.dumps(new_data, indent=2).encode('utf-8')
+            encrypted_creds = self.crypto_manager.encrypt_data(creds_bytes, self._master_password)
+            with open(self.credentials_file, 'wb') as f:
+                f.write(encrypted_creds)
+            self._credentials = new_data
+        except Exception as e:
+            logging.error(f"Failed to save credentials file: {e}", exc_info=True)
     
     def get_history_file_index(self):
         return [{"id": file_id, **data} for file_id, data in self._file_index.items()]
@@ -278,18 +262,12 @@ class ConfigManager:
             if file_id in filename and filename.endswith('_manifest_delta.json'):
                 try:
                     path = os.path.join(self.history_dir, filename)
-                    with open(path, 'r', encoding='utf-8') as f:
-                        delta = json.load(f)
-                    
+                    with open(path, 'r', encoding='utf-8') as f: delta = json.load(f)
                     raw_timestamp = delta['timestamp']
                     date_part, time_part = raw_timestamp.split('T')
                     time_part_fixed = time_part.replace('-', ':')
                     iso_str = f"{date_part}T{time_part_fixed}".replace("Z", "+00:00")
-                    
-                    versions.append({
-                        'action': delta['action'],
-                        'timestamp': datetime.fromisoformat(iso_str)
-                    })
+                    versions.append({'action': delta['action'], 'timestamp': datetime.fromisoformat(iso_str)})
                 except (json.JSONDecodeError, KeyError, ValueError) as e:
                     logging.warning(f"Skipping corrupt manifest {filename}: {e}")
         return versions
@@ -297,7 +275,6 @@ class ConfigManager:
     def get_file_content_at_version(self, file_id: str, target_timestamp: datetime) -> str:
         reconstructed_content = ""
         patch_files = sorted([f for f in os.listdir(self.sync_path) if file_id in f and f.endswith('.patch')])
-
         for patch_file in patch_files:
             try:
                 timestamp_str = patch_file.split(f'_{file_id}.patch')[0]
@@ -305,18 +282,14 @@ class ConfigManager:
                 time_part_fixed = time_part.replace('-', ':')
                 iso_str = f"{date_part}T{time_part_fixed}".replace("Z", "+00:00")
                 timestamp_dt = datetime.fromisoformat(iso_str)
-
                 if timestamp_dt <= target_timestamp:
                     path = os.path.join(self.sync_path, patch_file)
-                    with open(path, 'rb') as f:
-                        encrypted_patch = f.read()
-                    
+                    with open(path, 'rb') as f: encrypted_patch = f.read()
                     patch_text_bytes = self.crypto_manager.decrypt_data(encrypted_patch, self._master_password)
                     if patch_text_bytes:
                         patches = self.dmp.patch_fromText(patch_text_bytes.decode('utf-8'))
                         reconstructed_content, _ = self.dmp.patch_apply(patches, reconstructed_content)
-                else:
-                    break
+                else: break
             except (ValueError, IndexError):
                 logging.warning(f"Could not parse timestamp from {patch_file}")
                 continue

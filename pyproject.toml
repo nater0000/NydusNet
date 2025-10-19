@@ -19,9 +19,10 @@ classifiers = [
 
 # Runtime dependencies (replaces requirements.txt)
 dependencies = [
-    "fabric",
+    "fabric>=3.2.2",
+    "invoke>=2.2.0",
     "customtkinter",
-    "syncthing",
+    "syncthing2",
     "diff-match-patch",
     "cryptography",
     "requests",
@@ -45,4 +46,4 @@ packages = ["src"]
 build_script = "scripts/build.py"
 installer_script = "scripts/create_installer.iss"
 # Add the Syncthing version here
-syncthing_version = "v2.0.10"
+syncthing_version = "v1.29.1"
