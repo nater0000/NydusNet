@@ -19,13 +19,19 @@ class SyncthingManager:
         self.api_client = None
         self.my_device_id = None
         self.is_running = False
-        
         if getattr(sys, 'frozen', False):
+            # --- This runs in the PyInstaller .exe ---
+            # Correctly point to the temporary _MEIPASS directory
             base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-            self.syncthing_exe_path = os.path.join(base_path, "_internal", "syncthing", "syncthing.exe")
+            # FIX: Remove the incorrect "_internal" part of the path
+            self.syncthing_exe_path = os.path.join(base_path, "syncthing", "syncthing.exe")
+            logging.info(f"Running frozen, Syncthing path: {self.syncthing_exe_path}")
         else:
+            # --- This runs via VS Code debugger ---
+            # Path relative to this file (src/controllers/syncthing_manager.py)
             base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
             self.syncthing_exe_path = os.path.join(base_path, "resources", "syncthing", "syncthing.exe")
+            logging.info(f"Running from source, Syncthing path: {self.syncthing_exe_path}")
         
         self.app_data_path = os.path.join(os.getenv('APPDATA'), 'NydusNet')
         self.sync_folder_path = os.path.join(self.app_data_path, 'SyncData')
