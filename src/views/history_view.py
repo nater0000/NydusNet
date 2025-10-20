@@ -7,28 +7,23 @@ class HistoryView(ctk.CTkFrame):
     configuration files.
     """
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, fg_color="transparent")
         self.controller = controller
 
         self.grid_columnconfigure(2, weight=1) # Right-most column expands
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1) # Content is now on row 0
 
-        # --- Top Control Bar ---
-        top_frame = ctk.CTkFrame(self)
-        top_frame.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 0), sticky="ew")
-
-        back_btn = ctk.CTkButton(top_frame, text="< Back to Dashboard",
-                                 command=lambda: self.controller.show_frame("DashboardView"))
-        back_btn.pack(side="left", padx=10, pady=10)
+        # --- (Top Control Bar REMOVED) ---
 
         # --- Panes ---
         self.file_browser_frame = ctk.CTkScrollableFrame(self, label_text="Configuration Files")
-        self.file_browser_frame.grid(row=1, column=0, padx=(10, 5), pady=10, sticky="nsew")
+        self.file_browser_frame.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="nsew") # Gridded to row 0
 
         self.version_timeline_frame = ctk.CTkScrollableFrame(self, label_text="File History")
-        self.version_timeline_frame.grid(row=1, column=1, padx=5, pady=10, sticky="nsew")
+        self.version_timeline_frame.grid(row=0, column=1, padx=5, pady=10, sticky="nsew") # Gridded to row 0
 
         self.content_viewer = ctk.CTkTextbox(self, state="disabled", wrap="none") # Read-only, no line wrapping
+        # This will be gridded in _on_version_select
 
     def enter(self):
         """Called by the main controller when this view is shown to refresh data."""
@@ -46,6 +41,7 @@ class HistoryView(ctk.CTkFrame):
         self.content_viewer.configure(state="normal")
         self.content_viewer.delete("1.0", "end")
         self.content_viewer.configure(state="disabled")
+        self.content_viewer.grid_forget() # Hide it until a version is clicked
 
     def _populate_file_browser(self):
         """Fetches the index of all ever-created files and lists them."""
@@ -97,4 +93,4 @@ class HistoryView(ctk.CTkFrame):
         self.content_viewer.configure(state="disabled")
         
         # Ensure the content viewer is visible if it wasn't before
-        self.content_viewer.grid(row=1, column=2, padx=(5, 10), pady=10, sticky="nsew")
+        self.content_viewer.grid(row=0, column=2, padx=(5, 10), pady=10, sticky="nsew") # Gridded to row 0

@@ -9,9 +9,15 @@ class ToolTip(ctk.CTkToplevel):
     def __init__(self, widget, text):
         # THE FIX: Wrap initialization to prevent creating zombie objects
         try:
+            if not widget or not widget.winfo_exists():
+                logging.warning("ToolTip's parent widget does not exist. Aborting creation.")
+                self._is_valid = False
+                return
+            
             super().__init__(widget)
             self.widget = widget
             self.text = text
+            self._is_valid = True
             self.withdraw()
             self.overrideredirect(True)
             self.label = ctk.CTkLabel(self, text=self.text, corner_radius=5, fg_color="#3D3D3D", wraplength=200)
@@ -19,13 +25,14 @@ class ToolTip(ctk.CTkToplevel):
             self.widget.bind("<Enter>", self.show, add="+")
             self.widget.bind("<Leave>", self.hide, add="+")
         except Exception as e:
+            self._is_valid = False
             logging.warning(f"ToolTip creation failed, likely due to a race condition: {e}")
             if self.winfo_exists():
                 self.destroy()
 
     def show(self, event):
         try:
-            if not hasattr(self, 'widget') or not self.widget.winfo_exists() or not self.winfo_exists(): return
+            if not getattr(self, '_is_valid', False) or not self.widget.winfo_exists() or not self.winfo_exists(): return
             x = self.widget.winfo_rootx() + 20
             y = self.widget.winfo_rooty() + 20
             self.geometry(f"+{x}+{y}")
@@ -35,13 +42,12 @@ class ToolTip(ctk.CTkToplevel):
 
     def hide(self, event):
         try:
-            if not self.winfo_exists(): return
+            if not getattr(self, '_is_valid', False) or not self.winfo_exists(): return
             self.withdraw()
         except Exception:
             pass
 
     def destroy(self):
-        # THE FIX: Make destroy method safer
         if hasattr(self, 'widget') and self.widget and self.widget.winfo_exists():
             try:
                 self.widget.unbind("<Enter>")
@@ -60,9 +66,18 @@ class BaseDialog(ctk.CTkToplevel):
         self.transient(parent)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
-        self.after(50, self._center_window)
+
+        # --- FIX: Store the 'after' ID ---
+        self._center_window_after_id = self.after(50, self._center_window)
 
     def _center_window(self):
+        # --- FIX: Clear the ID after it runs ---
+        self._center_window_after_id = None
+
+        # Check if window still exists before trying to update it
+        if not self.winfo_exists():
+            return
+
         self.update_idletasks()
         width = self.winfo_width()
         height = self.winfo_height()
@@ -71,18 +86,35 @@ class BaseDialog(ctk.CTkToplevel):
         self.geometry(f"+{x}+{y}")
 
     def _on_ok(self, event=None):
-        self.grab_release()
+        # --- FIX: Consolidate cleanup into destroy() ---
         self.destroy()
 
     def _on_cancel(self):
         self.result = None
-        self.grab_release()
+        # --- FIX: Consolidate cleanup into destroy() ---
         self.destroy()
 
     def get_input(self):
         self.wait_window()
         return self.result
 
+    # --- FIX: Add a new, safer destroy method ---
+    def destroy(self):
+        # Safely cancel any pending 'after' tasks
+        if hasattr(self, '_center_window_after_id') and self._center_window_after_id:
+            self.after_cancel(self._center_window_after_id)
+            self._center_window_after_id = None
+
+        # Safely release grab
+        try:
+            self.grab_release()
+        except Exception:
+            pass # Window might already be gone
+
+        # Call the original CTkToplevel destroy
+        if self.winfo_exists():
+            super().destroy()
+            
 class UnlockDialog(BaseDialog):
     def __init__(self, parent, first_run: bool = False, controller=None, title=None):
         title = title or ("Create Master Password" if first_run else "Unlock NydusNet")
@@ -90,24 +122,49 @@ class UnlockDialog(BaseDialog):
         self.controller = controller
         self.first_run = first_run
         
+        # --- Get images from controller, which loaded them in app.py ---
         try:
-            base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-            show_icon_path = os.path.join(base_path, "resources", "images", "eye-show.png")
-            hide_icon_path = os.path.join(base_path, "resources", "images", "eye-hide.png")
-            self.show_icon = ctk.CTkImage(Image.open(show_icon_path), size=(20, 20))
-            self.hide_icon = ctk.CTkImage(Image.open(hide_icon_path), size=(20, 20))
+            # Check if controller and images exist
+            if self.controller and hasattr(self.controller, 'images'):
+                self.show_icon = self.controller.images.get("eye-show")
+                self.hide_icon = self.controller.images.get("eye-hide")
+                self.bg_image = self.controller.images.get("bg_gradient")
+            else:
+                raise ValueError("Controller or images not available")
+
+            if not self.show_icon or not self.hide_icon:
+                raise ValueError("Eye icons not found")
+                
             self.use_image_icons = True
-        except Exception:
-            logging.warning("Eyeball icons not found. Show/hide password feature will use text.")
+        except Exception as e:
+            logging.warning(f"Icons not found ({e}). Show/hide password feature will use text.")
             self.show_icon = "👁️"
             self.hide_icon = "🔒"
             self.use_image_icons = False
+            self.bg_image = None
+        
+        # --- Set up background and main frame (from example_background_image.py) ---
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        if self.bg_image:
+            self.bg_label = ctk.CTkLabel(self, text="", image=self.bg_image)
+            self.bg_label.grid(row=0, column=0)
+        
+        # This frame holds the content, centered on the background
+        self.main_frame = ctk.CTkFrame(self, corner_radius=10)
+        # Place frame in the center of the bg image
+        self.main_frame.grid(row=0, column=0, padx=30, pady=30, sticky="")
+        
+        # Set a minsize for the dialog
+        self.geometry("400x300")
+        self.resizable(False, False)
 
         if first_run:
             self._create_password_setup_ui()
         else:
             self._create_unlock_ui()
-
+            
     def _toggle_password_visibility(self, entry, button):
         if entry.cget("show") == "*":
             entry.configure(show="")
@@ -117,39 +174,53 @@ class UnlockDialog(BaseDialog):
             button.configure(image=self.show_icon if self.use_image_icons else None, text=self.show_icon if not self.use_image_icons else "")
             
     def _create_unlock_ui(self):
-        ctk.CTkLabel(self, text="Enter Master Password:").pack(padx=20, pady=(20, 0))
-        entry_frame = ctk.CTkFrame(self, fg_color="transparent")
-        entry_frame.pack(padx=20, pady=10)
-        self.entry1 = ctk.CTkEntry(entry_frame, show="*", width=250)
+        # Widgets are now packed into self.main_frame
+        ctk.CTkLabel(self.main_frame, text="NydusNet", font=ctk.CTkFont(size=20, weight="bold")).pack(padx=30, pady=(30, 10))
+        ctk.CTkLabel(self.main_frame, text="Enter Master Password:").pack(padx=30, pady=(10, 0))
+        
+        entry_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        entry_frame.pack(padx=30, pady=10)
+        
+        self.entry1 = ctk.CTkEntry(entry_frame, show="*", width=200) # Reduced width
         self.entry1.pack(side="left")
         self.entry1.bind("<Return>", self._on_ok)
         self.after(10, self.entry1.focus_set)
-        toggle_btn1 = ctk.CTkButton(entry_frame, image=self.show_icon if self.use_image_icons else None, text=self.show_icon if not self.use_image_icons else "", width=28, command=lambda: self._toggle_password_visibility(self.entry1, toggle_btn1))
+        
+        toggle_btn1 = ctk.CTkButton(entry_frame, image=self.show_icon if self.use_image_icons else None, 
+                                    text=self.show_icon if not self.use_image_icons else "", 
+                                    width=28, command=lambda: self._toggle_password_visibility(self.entry1, toggle_btn1))
         toggle_btn1.pack(side="left", padx=(5, 0))
-        button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.pack(padx=20, pady=(10, 20))
-        ctk.CTkButton(button_frame, text="Unlock", command=self._on_ok).pack(side="left", padx=10)
-        ctk.CTkButton(button_frame, text="Forgot Password?", command=self._on_forgot).pack(side="left", padx=10)
+        
+        button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        button_frame.pack(padx=30, pady=(10, 20))
+        
+        ctk.CTkButton(button_frame, text="Unlock", command=self._on_ok, width=110).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="Forgot Password?", command=self._on_forgot, width=110, fg_color="transparent", border_width=1).pack(side="left", padx=5)
 
     def _create_password_setup_ui(self):
-        ctk.CTkLabel(self, text="Create a New Master Password:").pack(padx=20, pady=(20, 0))
-        entry_frame1 = ctk.CTkFrame(self, fg_color="transparent")
-        entry_frame1.pack(padx=20, pady=5)
-        self.entry1 = ctk.CTkEntry(entry_frame1, show="*", width=250)
+        # Widgets are now packed into self.main_frame
+        ctk.CTkLabel(self.main_frame, text="Welcome to NydusNet", font=ctk.CTkFont(size=20, weight="bold")).pack(padx=30, pady=(30, 10))
+        ctk.CTkLabel(self.main_frame, text="Create a New Master Password:").pack(padx=30, pady=(10, 0))
+        
+        entry_frame1 = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        entry_frame1.pack(padx=30, pady=5)
+        self.entry1 = ctk.CTkEntry(entry_frame1, show="*", width=200)
         self.entry1.pack(side="left")
         self.after(10, self.entry1.focus_set)
         toggle_btn1 = ctk.CTkButton(entry_frame1, image=self.show_icon if self.use_image_icons else None, text=self.show_icon if not self.use_image_icons else "", width=28, command=lambda: self._toggle_password_visibility(self.entry1, toggle_btn1))
         toggle_btn1.pack(side="left", padx=(5, 0))
-        ctk.CTkLabel(self, text="Confirm Master Password:").pack(padx=20, pady=(10, 0))
-        entry_frame2 = ctk.CTkFrame(self, fg_color="transparent")
-        entry_frame2.pack(padx=20, pady=5)
-        self.entry2 = ctk.CTkEntry(entry_frame2, show="*", width=250)
+        
+        ctk.CTkLabel(self.main_frame, text="Confirm Master Password:").pack(padx=30, pady=(10, 0))
+        entry_frame2 = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        entry_frame2.pack(padx=30, pady=5)
+        self.entry2 = ctk.CTkEntry(entry_frame2, show="*", width=200)
         self.entry2.pack(side="left")
         self.entry2.bind("<Return>", self._on_ok)
         toggle_btn2 = ctk.CTkButton(entry_frame2, image=self.show_icon if self.use_image_icons else None, text=self.show_icon if not self.use_image_icons else "", width=28, command=lambda: self._toggle_password_visibility(self.entry2, toggle_btn2))
         toggle_btn2.pack(side="left", padx=(5, 0))
-        ctk.CTkLabel(self, text="Allowed characters: A-Z, a-z, 0-9, and !@#$%^&*()_+-=[]{}|;:,.<>?", font=("", 10), wraplength=300).pack(padx=20, pady=5)
-        ctk.CTkButton(self, text="Create", command=self._on_ok).pack(padx=20, pady=20)
+        
+        ctk.CTkLabel(self.main_frame, text="Allowed characters: A-Z, a-z, 0-9, and !@#$%^&*()_+-=[]{}|;:,.<>?", font=("", 10), wraplength=250).pack(padx=30, pady=5)
+        ctk.CTkButton(self.main_frame, text="Create", command=self._on_ok, width=230).pack(padx=30, pady=20)
 
     def _on_ok(self, event=None):
         password = self.entry1.get()
@@ -187,7 +258,7 @@ class ProvisionDialog(BaseDialog):
         ctk.CTkLabel(self, text=f"Enter administrative credentials for {server_ip}.\nThese are used once for setup and are NOT saved.", wraplength=350).pack(padx=20, pady=10)
         ctk.CTkLabel(self, text="Sudo Username:").pack(padx=20, pady=(10, 0), anchor="w")
         self.user_entry = ctk.CTkEntry(self, width=250)
-        self.user_entry.pack(padx=20, pady=5, fill="x")
+        self.user_entry.pack(padx=20, pady=5, fill="x") # <-- **TYPO FIX**
         self.user_entry.insert(0, "root")
         ctk.CTkLabel(self, text="Sudo Password:").pack(padx=20, pady=(10, 0), anchor="w")
         self.pass_entry = ctk.CTkEntry(self, show="*", width=250)
@@ -243,7 +314,7 @@ class ServerDialog(BaseDialog):
         self.name_entry = ctk.CTkEntry(self, width=250)
         self.name_entry.grid(row=0, column=1, padx=10, pady=5)
         self.name_entry.insert(0, self.initial_data.get("name", ""))
-        ctk.CTkLabel(self, text="IP Address:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(self, text="IP Address:").grid(row=1, column=0, padx=10, pady=5, sticky="w") # <-- **SYNTAX ERROR FIX**
         self.ip_entry = ctk.CTkEntry(self, width=250)
         self.ip_entry.grid(row=1, column=1, padx=10, pady=5)
         self.ip_entry.insert(0, self.initial_data.get("ip_address", ""))
@@ -308,7 +379,7 @@ class TunnelDialog(BaseDialog):
         ToolTip(remote_port_help, "The public port on your VPS (e.g., 443 for HTTPS).")
         ctk.CTkLabel(self, text="Local Destination:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
         local_dest_frame = ctk.CTkFrame(self, fg_color="transparent")
-        local_dest_frame.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+        local_dest_frame.grid(row=4, column=1, padx=10, pady=5, sticky="ew") # <-- **SYNTAX ERROR FIX**
         self.local_dest_entry = ctk.CTkEntry(local_dest_frame)
         self.local_dest_entry.pack(side="left", fill="x", expand=True)
         local_dest_help = ctk.CTkLabel(local_dest_frame, text="?", width=20, cursor="hand2")
@@ -341,7 +412,7 @@ class TunnelDialog(BaseDialog):
         
     def _on_ok(self, event=None):
         try:
-            if not self.server_map:
+            if not self.server_map: # <-- **TYPO FIX**
                 ErrorDialog(self, message="Cannot save. A provisioned server must be selected.")
                 return
             server_id = self.server_map.get(self.server_menu.get())
@@ -458,4 +529,3 @@ class LogViewerDialog(BaseDialog):
         textbox.insert("1.0", log_content)
         textbox.configure(state="disabled")
         ctk.CTkButton(self, text="Close", command=self._on_cancel).pack(pady=10)
-

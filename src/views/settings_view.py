@@ -3,19 +3,18 @@ import logging
 
 class SettingsView(ctk.CTkFrame):
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, fg_color="transparent") # Blend with content_frame
         self.controller = controller
+        self.images = controller.images # Get images from controller
+        
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1) # Main content now on row 0
 
-        # --- Back Button ---
-        back_btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        back_btn_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        ctk.CTkButton(back_btn_frame, text="← Back to Dashboard", command=lambda: self.controller.show_frame("DashboardView")).pack(side="left")
+        # --- (Back Button Frame REMOVED) ---
 
         # --- Tabbed Interface ---
         self.tab_view = ctk.CTkTabview(self, anchor="w")
-        self.tab_view.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.tab_view.grid(row=0, column=0, padx=10, pady=10, sticky="nsew") # Grid row=0
         self.tab_view.add("Servers")
         self.tab_view.add("Devices")
         self.tab_view.add("Security")
@@ -39,7 +38,11 @@ class SettingsView(ctk.CTkFrame):
     def _create_servers_tab(self):
         tab = self.tab_view.tab("Servers")
         tab.grid_columnconfigure(0, weight=1); tab.grid_rowconfigure(1, weight=1)
-        ctk.CTkButton(tab, text="➕ Register New Server", command=self.controller.add_new_server).pack(pady=10)
+        
+        ctk.CTkButton(tab, text="Register New Server", 
+                      image=self.images.get("add"), compound="left",
+                      command=self.controller.add_new_server).pack(pady=10)
+        
         self.server_list_frame = ctk.CTkScrollableFrame(tab, label_text="Registered Servers")
         self.server_list_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -69,15 +72,23 @@ class SettingsView(ctk.CTkFrame):
 
             btn_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
             btn_frame.grid(row=0, column=2, padx=10, pady=5)
+            btn_width = 30 # For icon-only buttons
 
             if not is_provisioned:
-                setup_btn = ctk.CTkButton(btn_frame, text="Setup Now...", command=lambda sid=server_id: self.controller.provision_server(sid))
+                setup_btn = ctk.CTkButton(btn_frame, text="Setup Now", 
+                                          image=self.images.get("setup"), compound="left",
+                                          command=lambda sid=server_id: self.controller.provision_server(sid))
                 setup_btn.pack(side="left", padx=5)
             
-            edit_btn = ctk.CTkButton(btn_frame, text="Edit", width=60, command=lambda sid=server_id: self.controller.edit_server(sid))
+            edit_btn = ctk.CTkButton(btn_frame, text="", width=btn_width, 
+                                       image=self.images.get("edit"),
+                                       command=lambda sid=server_id: self.controller.edit_server(sid))
             edit_btn.pack(side="left", padx=5)
 
-            delete_btn = ctk.CTkButton(btn_frame, text="Delete", width=60, fg_color="red", command=lambda sid=server_id: self.controller.delete_server(sid))
+            delete_btn = ctk.CTkButton(btn_frame, text="", width=btn_width, 
+                                         image=self.images.get("delete"),
+                                         fg_color="red", 
+                                         command=lambda sid=server_id: self.controller.delete_server(sid))
             delete_btn.pack(side="left", padx=5)
 
     # --- Devices Tab ---
@@ -90,7 +101,11 @@ class SettingsView(ctk.CTkFrame):
         self.this_device_name_label.pack(anchor="w", padx=10, pady=(10,0))
         self.this_device_id_label = ctk.CTkLabel(this_device_frame, text="ID: ...", wraplength=500, justify="left")
         self.this_device_id_label.pack(anchor="w", padx=10, pady=(0,10))
-        ctk.CTkButton(tab, text="➕ Invite Another Device", command=self.controller.add_new_device).pack(pady=10)
+        
+        ctk.CTkButton(tab, text="Invite Another Device", 
+                      image=self.images.get("add_device"), compound="left",
+                      command=self.controller.add_new_device).pack(pady=10)
+        
         self.other_devices_frame = ctk.CTkScrollableFrame(tab, label_text="Other Synced Devices")
         self.other_devices_frame.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -107,7 +122,11 @@ class SettingsView(ctk.CTkFrame):
             client_name = client.get('name', 'Unnamed Device')
             item_frame = ctk.CTkFrame(self.other_devices_frame); item_frame.pack(fill="x", pady=5)
             ctk.CTkLabel(item_frame, text=f"{client_name}\n{client_id}", justify="left").pack(side="left", padx=10, pady=5)
-            ctk.CTkButton(item_frame, text="Remove", fg_color="red", command=lambda cid=client_id: self.controller.remove_client(cid)).pack(side="right", padx=10, pady=5)
+            
+            ctk.CTkButton(item_frame, text="", width=30, 
+                          image=self.images.get("delete"),
+                          fg_color="red", 
+                          command=lambda cid=client_id: self.controller.remove_client(cid)).pack(side="right", padx=10, pady=5)
 
     # --- Security Tab ---
     def _create_security_tab(self):
@@ -157,7 +176,13 @@ class SettingsView(ctk.CTkFrame):
         appearance_frame = ctk.CTkFrame(tab)
         appearance_frame.pack(fill="x", padx=10, pady=10)
         ctk.CTkLabel(appearance_frame, text="Appearance Mode:").pack(side="left", padx=10, pady=10)
-        self.appearance_menu = ctk.CTkOptionMenu(appearance_frame, values=["Light", "Dark", "System"], command=self.controller.set_appearance_mode)
+        
+        # We can't use the controller's set_appearance_mode here because
+        # the app's menu is already in charge of this.
+        # This menu will just reflect the current setting.
+        self.appearance_menu = ctk.CTkOptionMenu(appearance_frame, 
+                                                 values=["Light", "Dark", "System"], 
+                                                 command=self.controller.set_appearance_mode)
+        
         self.appearance_menu.pack(side="left", padx=10, pady=10)
         self.appearance_menu.set(ctk.get_appearance_mode())
-

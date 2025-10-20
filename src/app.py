@@ -29,32 +29,150 @@ class App(ctk.CTk):
         super().__init__(*args, **kwargs)
 
         self.title("NydusNet")
-        self.geometry("420x300")
+        # Increase default size to accommodate sidebar
+        self.geometry("900x550") 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.is_unlocked = False
         self.is_shutting_down = False
         self.syncthing_id_ready = threading.Event()
 
+        # --- Load all images first ---
+        self.images = self._load_images()
+
+        # --- Config managers ---
         self.config_manager = ConfigManager(self)
         self.syncthing_manager = SyncthingManager(self)
         self.tunnel_manager = TunnelManager(self)
         self.crypto_manager = CryptoManager()
 
-        container = ctk.CTkFrame(self)
-        container.pack(side="top", fill="both", expand=True)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+        # --- Configure root grid layout (1 row, 2 columns) ---
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
 
+        # --- Create sidebar navigation frame ---
+        self.sidebar_frame = self._create_sidebar()
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+
+        # --- Create content frame (replaces old 'container') ---
+        self.content_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        self.content_frame.grid(row=0, column=1, sticky="nsew")
+        self.content_frame.grid_rowconfigure(0, weight=1)
+        self.content_frame.grid_columnconfigure(0, weight=1)
+
+        # --- Initialize all view frames ---
         self.frames = {}
         for F in (DashboardView, SettingsView, HistoryView, DebugView):
             page_name = F.__name__
-            frame = F(parent=container, controller=self)
+            frame = F(parent=self.content_frame, controller=self)
             self.frames[page_name] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
         self.withdraw()
         self.after(100, self.show_unlock_dialog)
         self.tray_icon = None
+
+    def _load_images(self) -> dict:
+        """Loads all images used by the app into a dictionary."""
+        try:
+            # --- MODIFIED PATH LOGIC ---
+            # Get the directory of the current file (e.g., .../NydusNet/src)
+            src_dir = os.path.dirname(os.path.abspath(__file__))
+            # Get the parent directory (e.g., .../NydusNet)
+            project_root = os.path.dirname(src_dir)
+            
+            # Use project_root as the base, unless running as a PyInstaller bundle
+            base_path = getattr(os, '_MEIPASS', project_root)
+            
+            image_dir = os.path.join(base_path, "resources", "images")
+            logging.info(f"Loading images from: {image_dir}")
+            # --- END MODIFIED PATH LOGIC ---
+
+            # Helper to load an image, logging a warning if it fails
+            def load_img(filename, size=(20, 20)):
+                try:
+                    path = os.path.join(image_dir, filename)
+                    return ctk.CTkImage(Image.open(path), size=size)
+                except Exception as e:
+                    logging.warning(f"Failed to load image: {filename}. Error: {e}")
+                    # Return a placeholder image
+                    return ctk.CTkImage(Image.new('RGB', size, color='red'), size=size)
+
+            # Load images for navigation, actions, and dialogs
+            # NOTE: You will need to add all these PNGs to your resources/images folder
+            return {
+                "logo": load_img("nydusnet_logo.png", (26, 26)), # Assumed logo filename
+                "dashboard": load_img("dashboard.png"),
+                "settings": load_img("settings.png"),
+                "history": load_img("history.png"),
+                "debug": load_img("debug.png"),
+                "start": load_img("start.png"),
+                "stop": load_img("stop.png"),
+                "edit": load_img("edit.png"),
+                "logs": load_img("logs.png"),
+                "delete": load_img("delete.png"),
+                "add": load_img("add.png"),
+                "start_all": load_img("start_all.png"),
+                "stop_all": load_img("stop_all.png"),
+                "add_device": load_img("add_device.png"),
+                "setup": load_img("setup.png"),
+                "eye-show": load_img("eye-show.png"),
+                "eye-hide": load_img("eye-hide.png"),
+                "bg_gradient": load_img("bg_gradient.jpg", (400, 300)), # For UnlockDialog
+            }
+        except Exception as e:
+            logging.error(f"Critical error loading images: {e}")
+            return {}
+        
+    def _create_sidebar(self) -> ctk.CTkFrame:
+        """Creates and configures the sidebar navigation frame."""
+        frame = ctk.CTkFrame(self, width=140, corner_radius=0)
+        frame.grid_rowconfigure(5, weight=1) # Push appearance mode to bottom
+
+        logo_label = ctk.CTkLabel(frame, text=" NydusNet", image=self.images.get("logo"),
+                                     compound="left", font=ctk.CTkFont(size=16, weight="bold"))
+        logo_label.grid(row=0, column=0, padx=20, pady=20)
+
+        # --- Navigation Buttons ---
+        self.dashboard_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10, 
+                                                text="Dashboard", fg_color="transparent", 
+                                                text_color=("gray10", "gray90"), 
+                                                hover_color=("gray70", "gray30"),
+                                                image=self.images.get("dashboard"), anchor="w",
+                                                command=lambda: self.show_frame("DashboardView"))
+        self.dashboard_button.grid(row=1, column=0, sticky="ew")
+
+        self.settings_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10, 
+                                               text="Settings", fg_color="transparent", 
+                                               text_color=("gray10", "gray90"), 
+                                               hover_color=("gray70", "gray30"),
+                                               image=self.images.get("settings"), anchor="w",
+                                               command=lambda: self.show_frame("SettingsView"))
+        self.settings_button.grid(row=2, column=0, sticky="ew")
+
+        self.history_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10, 
+                                              text="History", fg_color="transparent", 
+                                              text_color=("gray10", "gray90"), 
+                                              hover_color=("gray70", "gray30"),
+                                              image=self.images.get("history"), anchor="w",
+                                              command=lambda: self.show_frame("HistoryView"))
+        self.history_button.grid(row=3, column=0, sticky="ew")
+        
+        self.debug_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10, 
+                                            text="Debug", fg_color="transparent", 
+                                            text_color=("gray10", "gray90"), 
+                                            hover_color=("gray70", "gray30"),
+                                            image=self.images.get("debug"), anchor="w",
+                                            command=lambda: self.show_frame("DebugView"))
+        self.debug_button.grid(row=4, column=0, sticky="ew")
+
+        # --- Appearance Mode Menu ---
+        self.appearance_mode_menu = ctk.CTkOptionMenu(frame, 
+                                                        values=["Light", "Dark", "System"],
+                                                        command=self.set_appearance_mode)
+        self.appearance_mode_menu.grid(row=6, column=0, padx=20, pady=20, sticky="s")
+        self.appearance_mode_menu.set(ctk.get_appearance_mode())
+
+        return frame
 
     def on_syncthing_id_ready(self):
         """Callback from SyncthingManager when the device ID is available."""
@@ -107,6 +225,7 @@ class App(ctk.CTk):
     def show_unlock_dialog(self):
         if self.is_unlocked: return
         is_first_run = not self.config_manager.is_configured()
+        # Pass the controller (self) so the dialog can access self.images
         dialog = UnlockDialog(self, first_run=is_first_run, controller=self)
         password = dialog.get_input()
 
@@ -163,7 +282,7 @@ class App(ctk.CTk):
         recovery_key = recovery_dialog.get_input()
         if not recovery_key: return
 
-        new_password_dialog = UnlockDialog(self, first_run=True, title="Create New Master Password")
+        new_password_dialog = UnlockDialog(self, first_run=True, title="Create New Master Password", controller=self)
         new_password = new_password_dialog.get_input()
         if not new_password: return
         
@@ -176,7 +295,7 @@ class App(ctk.CTk):
 
     def change_master_password(self):
         logging.info("Starting master password change workflow.")
-        old_password_dialog = UnlockDialog(self, title="Enter Old Master Password")
+        old_password_dialog = UnlockDialog(self, title="Enter Old Master Password", controller=self)
         old_password = old_password_dialog.get_input()
         if not old_password: return
         
@@ -184,7 +303,7 @@ class App(ctk.CTk):
             with open(self.config_manager.check_file, 'rb') as f:
                 encrypted_check_data = f.read()
             if self.config_manager.crypto_manager.decrypt_data(encrypted_check_data, old_password):
-                new_password_dialog = UnlockDialog(self, first_run=True, title="Enter New Master Password")
+                new_password_dialog = UnlockDialog(self, first_run=True, title="Enter New Master Password", controller=self)
                 new_password = new_password_dialog.get_input()
                 if not new_password: return
                 if self.config_manager.re_encrypt_with_new_password(old_key=old_password, new_password=new_password):
@@ -205,11 +324,22 @@ class App(ctk.CTk):
             self.show_error("Recovery key not found or could not be decrypted.")
 
     def show_frame(self, page_name: str):
+        """Shows the selected frame and updates the sidebar button states."""
         if not self.is_unlocked: return
         logging.info(f"Switching to view: {page_name}")
+        
+        # --- Update button colors (like in image_example.py) ---
+        selected_color = ("gray75", "gray25")
+        
+        self.dashboard_button.configure(fg_color=selected_color if page_name == "DashboardView" else "transparent")
+        self.settings_button.configure(fg_color=selected_color if page_name == "SettingsView" else "transparent")
+        self.history_button.configure(fg_color=selected_color if page_name == "HistoryView" else "transparent")
+        self.debug_button.configure(fg_color=selected_color if page_name == "DebugView" else "transparent")
+
+        # --- Show the frame ---
         frame = self.frames[page_name]
         if hasattr(frame, 'enter') and callable(getattr(frame, 'enter')):
-            frame.enter()
+            self.after(0, frame.enter) # Use after(0) to ensure UI updates first
         frame.tkraise()
 
     def refresh_dashboard(self):
@@ -356,4 +486,3 @@ class App(ctk.CTk):
     def get_history_file_index(self): return self.config_manager.get_history_file_index()
     def get_file_version_history(self, file_id): return self.config_manager.get_file_version_history(file_id)
     def get_file_content_at_version(self, file_id, timestamp): return self.config_manager.get_file_content_at_version(file_id, timestamp)
-

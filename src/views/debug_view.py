@@ -6,7 +6,7 @@ class DebugView(ctk.CTkFrame):
     A view for developers to inspect the raw in-memory configuration state.
     """
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, fg_color="transparent")
         self.controller = controller
 
         self.grid_columnconfigure(1, weight=1)
