@@ -4,13 +4,12 @@ import os
 import time
 import threading
 import xml.etree.ElementTree as ET
-import sys
-from syncthing import Syncthing, SyncthingError
+import sys # <-- Added import
+from syncthing import Syncthing, SyncthingError # Assuming syncthing2 library renamed to syncthing
 
 class SyncthingManager:
     """
     Manages the embedded Syncthing process and its API for decentralized config syncing.
-    This version uses the modern 'syncthing2' library.
     """
     def __init__(self, controller):
         self.controller = controller
@@ -19,164 +18,427 @@ class SyncthingManager:
         self.api_client = None
         self.my_device_id = None
         self.is_running = False
-        if getattr(sys, 'frozen', False):
-            # --- This runs in the PyInstaller .exe ---
-            # Correctly point to the temporary _MEIPASS directory
-            base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-            # FIX: Remove the incorrect "_internal" part of the path
-            self.syncthing_exe_path = os.path.join(base_path, "syncthing", "syncthing.exe")
-            logging.info(f"Running frozen, Syncthing path: {self.syncthing_exe_path}")
-        else:
-            # --- This runs via VS Code debugger ---
-            # Path relative to this file (src/controllers/syncthing_manager.py)
-            base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+        # --- CORRECTED PATH LOGIC FOR PACKAGED APP ---
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            # Running in a PyInstaller bundle
+            # sys._MEIPASS is the root of the extracted files (e.g., _MEIxxxxx)
+            base_path = sys._MEIPASS
+            logging.info(f"SyncthingManager: Running packaged. Base path (_MEIPASS): {base_path}")
+            # Path relative to base_path, matching --add-data destination in build.py
             self.syncthing_exe_path = os.path.join(base_path, "resources", "syncthing", "syncthing.exe")
-            logging.info(f"Running from source, Syncthing path: {self.syncthing_exe_path}")
-        
+        else:
+            # Running as a normal script
+            # Path relative to this file (src/controllers/syncthing_manager.py)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(os.path.dirname(script_dir)) # controllers -> src -> project root
+            logging.info(f"SyncthingManager: Running script. Project root: {project_root}")
+            self.syncthing_exe_path = os.path.join(project_root, "resources", "syncthing", "syncthing.exe")
+        # --- END CORRECTION ---
+
+        logging.info(f"Syncthing executable path determined: {self.syncthing_exe_path}")
+
         self.app_data_path = os.path.join(os.getenv('APPDATA'), 'NydusNet')
         self.sync_folder_path = os.path.join(self.app_data_path, 'SyncData')
-        self.folder_label = "NydusNetConfig"
-        
+        # Ensure SyncData exists for Syncthing's config/logs later
+        try:
+            os.makedirs(self.sync_folder_path, exist_ok=True)
+        except OSError as e:
+             # Log error but don't prevent initialization, start() will handle it
+             logging.error(f"Could not create SyncData directory {self.sync_folder_path}: {e}")
+        self.folder_label = "NydusNetConfig" # Syncthing Folder Label
+
     def start(self, base_port=8385, max_retries=10) -> bool:
+        """Starts the Syncthing process, finds an open port, and initializes the API client."""
         if self.is_running:
+            logging.info("Syncthing already running.")
             return True
 
+        # Check path existence *before* trying to run
         if not os.path.exists(self.syncthing_exe_path):
-            logging.error(f"Syncthing executable not found at {self.syncthing_exe_path}")
-            return False
+            logging.error(f"Syncthing executable NOT FOUND at expected location: {self.syncthing_exe_path}")
+            # Raise specific error to be caught in app.py
+            raise FileNotFoundError(f"Syncthing not found: {self.syncthing_exe_path}")
 
         for i in range(max_retries):
             current_port = base_port + i
+            # Syncthing config/data path within AppData
             config_path = os.path.join(self.app_data_path, "syncthing_config")
             log_path = os.path.join(config_path, "syncthing.log")
-            os.makedirs(config_path, exist_ok=True)
+            try:
+                os.makedirs(config_path, exist_ok=True) # Ensure config dir exists
+            except OSError as e:
+                logging.error(f"Cannot create Syncthing config directory {config_path}: {e}")
+                raise RuntimeError(f"Cannot create Syncthing config directory: {e}") from e
 
-            command = [
-                f'"{self.syncthing_exe_path}"', '--home', f'"{config_path}"',
-                '--gui-address', f'"127.0.0.1:{current_port}"',
-                "--no-browser", '--logfile', f'"{log_path}"'
+            # Command parts - quote paths with spaces
+            command_parts = [
+                f'"{self.syncthing_exe_path}"',
+                 '--home', f'"{config_path}"', # Use --home for config/data dir
+                 '--gui-address', f'"127.0.0.1:{current_port}"',
+                 "--no-browser", # Prevent Syncthing from opening a browser
+                 '--logfile', f'"{log_path}"' # Log file within config dir
             ]
-            
-            command_str = ' '.join(command)
-            logging.info(f"Attempting to start Syncthing: {command_str}")
+
+            command_str = ' '.join(command_parts)
+            logging.info(f"Attempting ({i+1}/{max_retries}) to start Syncthing on port {current_port}: {command_str}")
 
             try:
+                # Use CREATE_NO_WINDOW to hide console on Windows
+                creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+
+                # Start the process
                 self.process = subprocess.Popen(
-                    command_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW
+                    command_str, shell=True, # shell=True needed due to quotes in command_str
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding='utf-8', errors='replace', # Decode output as text
+                    creationflags=creationflags
                 )
-                
-                # We still wait a moment to catch immediate failures
-                time.sleep(2) 
-                if self.process.poll() is not None:
-                    _, stderr = self.process.communicate()
-                    if "FATAL: Listen" in stderr or "address already in use" in stderr:
-                        logging.warning(f"Port {current_port} is in use. Retrying...")
-                        continue
+
+                # Wait briefly to see if it fails immediately
+                time.sleep(2)
+                exit_code = self.process.poll()
+
+                if exit_code is not None: # Process exited
+                    stdout_data, stderr_data = "", ""
+                    try:
+                        # Try to get output if process ended quickly
+                        stdout_data, stderr_data = self.process.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        logging.warning("Syncthing process ended but failed to get output quickly.")
+                    except Exception as comm_e:
+                        logging.warning(f"Error getting output from ended Syncthing process: {comm_e}")
+
+                    logging.error(f"Syncthing exited immediately (code {exit_code}) on port {current_port}.")
+                    if stdout_data: logging.error(f"Syncthing STDOUT:\n{stdout_data.strip()}")
+                    if stderr_data: logging.error(f"Syncthing STDERR:\n{stderr_data.strip()}")
+
+                    # Check stderr for common errors like port conflict
+                    if "address already in use" in stderr_data or "bind:" in stderr_data or "FATAL: Listen" in stderr_data:
+                        logging.warning(f"Port {current_port} is in use or Syncthing already running. Retrying...")
+                        self.process = None # Clear process ref
+                        continue # Try next port
                     else:
-                        logging.error(f"Syncthing failed on port {current_port}. Stderr: {stderr.strip()}")
-                        continue
-                
-                logging.info(f"Syncthing process started on port {current_port}! Initializing API client...")
-                self._initialize_api_client(config_path, current_port)
-                self.is_running = True
-                return True
+                        # Other immediate failure
+                        logging.warning(f"Syncthing failed unexpectedly on port {current_port}. Retrying...")
+                        self.process = None # Clear process ref
+                        continue # Try next port
+
+                # If poll() is None, process is running
+                logging.info(f"Syncthing process appears to be running on port {current_port}. Initializing API client...")
+                api_init_success = self._initialize_api_client(config_path, current_port) # Initialize API
+
+                if api_init_success:
+                    self.is_running = True
+                    logging.info("Syncthing startup and API connection successful.")
+                    return True # Successfully started and connected
+                else:
+                     # API init failed, stop the process and retry port
+                     logging.error("Syncthing process started but API initialization failed. Trying next port.")
+                     if self.process and self.process.poll() is None:
+                         self.process.terminate()
+                         try: self.process.wait(timeout=2)
+                         except subprocess.TimeoutExpired: self.process.kill()
+                     self.process = None
+                     continue # Try next port
+
             except Exception as e:
-                logging.error(f"Failed to launch Syncthing: {e}", exc_info=True)
-                continue
+                logging.error(f"Failed to launch Syncthing on port {current_port}: {e}", exc_info=True)
+                # Ensure process is cleaned up if Popen failed partially
+                if self.process and self.process.poll() is None:
+                    try: self.process.kill()
+                    except Exception: pass
+                self.process = None
+                continue # Try next port
 
-        logging.error("Failed to start Syncthing after multiple attempts.")
-        return False
+        # Loop finished without success
+        logging.error("Failed to start Syncthing after multiple port attempts.")
+        self.is_running = False
+        # Raise an error to be caught by app.py's starter thread
+        raise RuntimeError("Syncthing could not be started. Check logs for port conflicts or other errors.")
 
-    def _initialize_api_client(self, config_path, port):
+
+    def _initialize_api_client(self, config_path, port) -> bool:
+        """Initializes the Syncthing API client after the process starts."""
         try:
             config_xml_path = os.path.join(config_path, "config.xml")
             # Wait for config file to be created by Syncthing
-            for _ in range(10): # Wait up to 10 seconds
-                if os.path.exists(config_xml_path): break
+            for attempt in range(15): # Wait up to 15 seconds
+                if os.path.exists(config_xml_path):
+                     logging.debug(f"config.xml found after {attempt+1} seconds.")
+                     break
+                if attempt == 5: # Log if taking longer
+                     logging.info("Waiting for Syncthing to create config.xml...")
                 time.sleep(1)
-            else:
+            else: # Loop finished without break
                 raise FileNotFoundError("Syncthing config.xml was not created in time.")
 
-            tree = ET.parse(config_xml_path)
-            self.api_key = tree.getroot().find('.//gui/apikey').text
-            
-            # THE FIX: Create the client first, then poll for connection.
-            self.api_client = Syncthing(self.api_key, host="127.0.0.1", port=port, is_https=False)
-            
+            # Add delay before parsing, sometimes file exists but isn't fully written
+            time.sleep(0.5)
+
+            # Parse config to get API key
+            try:
+                tree = ET.parse(config_xml_path)
+                api_key_node = tree.getroot().find('.//gui/apikey')
+                if api_key_node is None or not api_key_node.text:
+                    raise ValueError("API key not found or empty in config.xml")
+                self.api_key = api_key_node.text
+                logging.debug("API key retrieved from config.xml.")
+            except ET.ParseError as xml_err:
+                logging.error(f"Failed to parse config.xml: {xml_err}")
+                raise ValueError("Could not parse Syncthing config.xml.") from xml_err
+
+            # Create the client first
+            self.api_client = Syncthing(self.api_key, host="127.0.0.1", port=port, is_https=False, timeout=5.0) # Use is_https=False for http, add timeout
+
+            # Poll for API connection
+            logging.info(f"Attempting to connect to Syncthing API at http://127.0.0.1:{port}...")
             for i in range(10): # Try to connect for up to 10 seconds
                 try:
-                    status = self.api_client.system.status()
-                    self.my_device_id = status['myID']
+                    status = self.api_client.system.status() # Poll status
+                    self.my_device_id = status.get('myID')
+                    if not self.my_device_id:
+                         raise ValueError("API connected but myID not found in status.")
                     logging.info(f"Syncthing API connected successfully. This device ID: {self.my_device_id}")
-                    
-                    self.controller.on_syncthing_id_ready()
-                    self.create_initial_share()
-                    return # Success!
-                except SyncthingError as e:
-                    # This specific error indicates the API is not ready yet
-                    if "http request error" in str(e):
+
+                    # --- Crucial callbacks and setup ---
+                    self.controller.on_syncthing_id_ready() # Notify App
+                    self.create_initial_share() # Ensure shared folder exists
+                    # --- End Crucial ---
+                    return True # Success!
+                except SyncthingError as api_err:
+                    # Check for connection errors specifically
+                    if "http request error" in str(api_err).lower() or "connection refused" in str(api_err).lower():
                         logging.debug(f"Syncthing API not ready yet (attempt {i+1}/10). Retrying in 1 second...")
                         time.sleep(1)
                     else:
-                        raise # It's a different, unexpected API error, so raise it
-            
-            # If the loop finishes without returning, it means we failed to connect
+                        logging.error(f"Unexpected Syncthing API error: {api_err}")
+                        raise # It's a different API error, raise it
+                except ConnectionError as conn_err: # Catch lower-level connection errors
+                    logging.debug(f"Syncthing API connection failed (attempt {i+1}/10): {conn_err}. Retrying...")
+                    time.sleep(1)
+                except Exception as e: # Catch any other errors during status check
+                    logging.error(f"Unexpected error connecting to Syncthing API: {e}", exc_info=True)
+                    # Don't retry indefinitely on unexpected errors
+                    raise ConnectionError(f"Unexpected error connecting to API: {e}") from e
+
+
+            # If the loop finishes without returning, connection failed
             raise ConnectionError("Could not connect to Syncthing API after multiple retries.")
 
         except Exception as e:
             logging.error(f"Failed to initialize Syncthing API client: {e}", exc_info=True)
+            self.api_client = None # Ensure client is None on failure
+            self.api_key = None
+            self.my_device_id = None
+            return False # Indicate failure
 
     def stop(self):
+        """Stops the Syncthing process if it's running."""
         if self.process and self.process.poll() is None:
             logging.info("Shutting down Syncthing process.")
-            self.process.terminate()
             try:
-                self.process.wait(timeout=5)
+                self.process.terminate() # Ask nicely first
+                self.process.wait(timeout=5) # Wait up to 5 seconds
+                logging.info("Syncthing process terminated.")
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                logging.warning("Syncthing process did not terminate gracefully, killing.")
+                self.process.kill() # Force kill if necessary
+                try: self.process.wait(timeout=2) # Wait briefly after kill
+                except subprocess.TimeoutExpired: pass
+            except Exception as e:
+                 logging.error(f"Error stopping Syncthing process: {e}")
+        else:
+            logging.debug("Syncthing process already stopped or not started.")
+
+        self.process = None # Clear process reference
         self.is_running = False
+        self.api_client = None # Clear API client
+        self.api_key = None
+        self.my_device_id = None
+
 
     def create_initial_share(self):
+        """Ensures the NydusNetConfig folder is shared in Syncthing."""
+        if not self.api_client or not self.is_running:
+            logging.warning("Cannot create share, Syncthing API not connected.")
+            return
+
         try:
             config = self.api_client.system.config()
-            if not any(f['label'] == self.folder_label for f in config.get('folders', [])):
-                logging.info(f"Creating initial share for folder: {self.folder_label}")
-                config['folders'].append({
-                    'id': self.folder_label, 'label': self.folder_label,
-                    'path': self.sync_folder_path, 'devices': []
-                })
+            folders = config.get('folders', [])
+            folder_exists = any(f.get('id') == self.folder_label for f in folders)
+
+            if not folder_exists:
+                logging.info(f"Syncthing folder '{self.folder_label}' not found. Creating and sharing...")
+                # Ensure the local path exists before telling Syncthing about it
+                os.makedirs(self.sync_folder_path, exist_ok=True)
+
+                new_folder_config = {
+                    'id': self.folder_label, # Use label as ID for simplicity here
+                    'label': self.folder_label,
+                    'path': self.sync_folder_path,
+                    'type': 'sendreceive', # Standard type
+                    'devices': [], # Initially shared with no devices
+                    'rescanIntervalS': 60, # Check for changes every minute
+                    'fsWatcherEnabled': True, # Use filesystem events if possible
+                    'autoNormalize': True, # Handle filename normalization
+                }
+                # Append the new folder config
+                config.setdefault('folders', []).append(new_folder_config)
+
+                # Post the updated config back to Syncthing
                 self.api_client.system.post_config(config)
+                logging.info(f"Successfully added folder '{self.folder_label}' to Syncthing config.")
+                # Syncthing might need a restart or API call to rescan/apply immediately
+                try:
+                     self.api_client.db.scan(folder=self.folder_label) # Trigger scan
+                except Exception as scan_e:
+                     logging.warning(f"Could not trigger initial scan for {self.folder_label}: {scan_e}")
+
+            else:
+                 logging.debug(f"Syncthing folder '{self.folder_label}' already exists.")
+
+        except SyncthingError as e:
+            logging.error(f"Syncthing API error during initial share creation: {e}", exc_info=True)
         except Exception as e:
-            logging.error(f"Failed to create initial share: {e}", exc_info=True)
+            logging.error(f"Unexpected error during initial share creation: {e}", exc_info=True)
+
 
     def generate_invite(self) -> str | None:
-        return f"{self.my_device_id}|{self.folder_label}" if self.my_device_id else None
+        """Generates an invite string containing device ID and folder label."""
+        # Requires my_device_id to be set by _initialize_api_client
+        if self.my_device_id:
+            return f"{self.my_device_id}|{self.folder_label}"
+        else:
+            logging.warning("Cannot generate invite: Syncthing device ID not yet known.")
+            return None
 
-    def accept_invite(self, invite_string: str):
+    def accept_invite(self, invite_string: str) -> bool:
+        """Adds a device and shares the folder based on an invite string."""
+        if not self.api_client or not self.is_running:
+             logging.error("Cannot accept invite, Syncthing API not connected.")
+             return False
+
         try:
-            device_id, folder_id = invite_string.split('|')
-            logging.info(f"Accepting invite from {device_id} for folder {folder_id}")
-            config = self.api_client.system.config()
-            if not any(d['deviceID'] == device_id for d in config.get('devices', [])):
-                config['devices'].append({'deviceID': device_id, 'name': 'Synced Device'})
+            parts = invite_string.strip().split('|')
+            if len(parts) != 2:
+                raise ValueError("Invalid invite string format.")
+            device_id, folder_id = parts[0], parts[1]
+
+            if folder_id != self.folder_label:
+                 raise ValueError(f"Invite is for an unknown folder '{folder_id}'. Expected '{self.folder_label}'.")
+
+            logging.info(f"Accepting invite from device {device_id} for folder {folder_id}")
+            config = self.api_client.system.config() # Get current config
+
+            # 1. Add the device if it doesn't exist
+            devices = config.setdefault('devices', [])
+            device_exists = any(d.get('deviceID') == device_id for d in devices)
+            if not device_exists:
+                logging.info(f"Adding new device: {device_id}")
+                devices.append({
+                    'deviceID': device_id,
+                    'name': f'Synced Device ({device_id[:7]}...)', # Default name
+                    'introducer': False, # Typically false unless it's a dedicated introducer
+                    'compression': 'metadata' # Default compression
+                })
+            else:
+                 logging.debug(f"Device {device_id} already exists.")
+
+            # 2. Share the specific folder with the device if not already shared
+            folder_updated = False
             for folder in config.get('folders', []):
-                if folder['id'] == folder_id and not any(d['deviceID'] == device_id for d in folder.get('devices', [])):
-                    folder['devices'].append({'deviceID': device_id})
-                    break
-            self.api_client.system.post_config(config)
-        except Exception as e:
+                if folder.get('id') == folder_id: # Match by ID (which we set to label)
+                    folder_devices = folder.setdefault('devices', [])
+                    device_shared = any(d.get('deviceID') == device_id for d in folder_devices)
+                    if not device_shared:
+                         logging.info(f"Sharing folder '{folder_id}' with device {device_id}")
+                         folder_devices.append({'deviceID': device_id})
+                         folder_updated = True
+                    else:
+                         logging.debug(f"Folder '{folder_id}' already shared with device {device_id}.")
+                    break # Found the correct folder
+            else:
+                 # This should not happen if create_initial_share worked
+                 logging.error(f"Could not find folder '{folder_id}' in config to share.")
+                 return False
+
+            # 3. Post config only if changes were made
+            if not device_exists or folder_updated:
+                 logging.info("Posting updated configuration to Syncthing.")
+                 self.api_client.system.post_config(config)
+                 return True
+            else:
+                 logging.info("No configuration changes needed to accept invite.")
+                 return True
+
+        except ValueError as e:
             logging.error(f"Failed to accept invite: {e}")
-            
-    def remove_device(self, device_id: str):
-        try:
-            logging.info(f"Removing device {device_id}")
-            config = self.api_client.system.config()
-            for folder in config.get('folders', []):
-                if folder['label'] == self.folder_label:
-                    folder['devices'] = [d for d in folder.get('devices', []) if d.get('deviceID') != device_id]
-            config['devices'] = [d for d in config.get('devices', []) if d.get('deviceID') != device_id]
-            self.api_client.system.post_config(config)
+            return False
+        except SyncthingError as e:
+             logging.error(f"Syncthing API error accepting invite: {e}", exc_info=True)
+             return False
         except Exception as e:
-            logging.error(f"Failed to remove device {device_id}: {e}")
+            logging.error(f"Unexpected error accepting invite: {e}", exc_info=True)
+            return False
 
+
+    def remove_device(self, device_id: str):
+        """Removes a device and removes it from the shared folder."""
+        if not self.api_client or not self.is_running:
+             logging.error(f"Cannot remove device {device_id}, Syncthing API not connected.")
+             # Raise error to indicate failure
+             raise ConnectionError("Syncthing API not connected.")
+
+        try:
+            logging.info(f"Attempting to remove device {device_id} from Syncthing config.")
+            config = self.api_client.system.config() # Get current config
+            changes_made = False
+
+            # 1. Remove device from the specific shared folder's device list
+            for folder in config.get('folders', []):
+                if folder.get('id') == self.folder_label: # Match by ID/Label
+                    original_devices = folder.get('devices', [])
+                    updated_devices = [d for d in original_devices if d.get('deviceID') != device_id]
+                    if len(updated_devices) < len(original_devices):
+                         logging.info(f"Removing device {device_id} from folder '{self.folder_label}'.")
+                         folder['devices'] = updated_devices
+                         changes_made = True
+                    break # Found the folder
+
+            # 2. Remove the device from the global device list
+            original_global_devices = config.get('devices', [])
+            updated_global_devices = [d for d in original_global_devices if d.get('deviceID') != device_id]
+            if len(updated_global_devices) < len(original_global_devices):
+                 logging.info(f"Removing device {device_id} from global device list.")
+                 config['devices'] = updated_global_devices
+                 changes_made = True
+
+            # 3. Post config only if changes were actually made
+            if changes_made:
+                 logging.info(f"Posting updated configuration to remove device {device_id}.")
+                 self.api_client.system.post_config(config)
+                 logging.info(f"Successfully removed device {device_id} from config.")
+            else:
+                 logging.info(f"Device {device_id} not found in configuration, no changes made.")
+
+        except SyncthingError as e:
+            logging.error(f"Syncthing API error removing device {device_id}: {e}", exc_info=True)
+            raise # Re-raise API errors for the caller (app.py) to handle
+        except Exception as e:
+            logging.error(f"Unexpected error removing device {device_id}: {e}", exc_info=True)
+            raise # Re-raise unexpected errors
+
+
+    def get_devices(self) -> list:
+        """Gets the list of configured devices from Syncthing."""
+        if not self.api_client or not self.is_running:
+             logging.warning("Cannot get devices, Syncthing API not connected.")
+             return []
+        try:
+            config = self.api_client.system.config()
+            return config.get('devices', [])
+        except Exception as e:
+            logging.error(f"Failed to get Syncthing devices: {e}")
+            return []
