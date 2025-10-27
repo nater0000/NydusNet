@@ -529,7 +529,6 @@ class ServerDialog(BaseDialog):
         super().__init__(parent, title=title)
         
         self.controller = controller
-        # --- FIX: Get shared tooltip instance ---
         self.tooltip = controller.tooltip if hasattr(controller, 'tooltip') else None
 
         self.initial_data = initial_data or {}
@@ -555,16 +554,31 @@ class ServerDialog(BaseDialog):
         self.tunnel_user_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'tunnel' (default)")
         self.tunnel_user_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
         
-        # --- FIX: Apply tooltip using bind ---
         if self.tooltip:
              tooltip_text = "Optional: Override the default 'tunnel' user. Leave blank for default."
              self.tunnel_user_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
              self.tunnel_user_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
+        # --- *** UPDATED "MANUALLY CONFIGURED" CHECKBOX *** ---
+        row += 1
+        self.is_provisioned_var = ctk.BooleanVar() # Use a BooleanVar
+        self.manual_config_checkbox = ctk.CTkCheckBox(
+            form_frame, 
+            text="I have manually configured this server (Ready ✅)",
+            variable=self.is_provisioned_var,
+            onvalue=True,
+            offvalue=False
+        )
+        self.manual_config_checkbox.grid(row=row, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        # --- *** END CHANGE *** ---
+
         # --- Load initial data ---
         self.name_entry.insert(0, self.initial_data.get("name", ""))
         self.ip_entry.insert(0, self.initial_data.get("ip_address", ""))
         self.tunnel_user_entry.insert(0, self.initial_data.get("tunnel_user", ""))
+        
+        # --- *** SET CHECKBOX STATE FROM LOADED DATA *** ---
+        self.is_provisioned_var.set(self.initial_data.get("is_provisioned", False))
 
         # --- Button Frame ---
         button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -592,13 +606,28 @@ class ServerDialog(BaseDialog):
              ErrorDialog(self, title="Input Error", message="IP Address / Host cannot be empty.")
              return
              
-        # Merge new data with initial data (to preserve 'id', 'is_provisioned', etc.)
+        # Merge new data with initial data (to preserve 'id')
         self.result = self.initial_data.copy()
+        
+        # --- *** EXPLICITLY REMOVE BOTH PASSWORD KEYS *** ---
+        if "sudo_password" in self.result:
+            logging.debug("Removing deprecated 'sudo_password' from server config.")
+            self.result.pop("sudo_password", None)
+            
+        if "password" in self.result: # <-- ADDED THIS BLOCK
+            logging.debug("Removing deprecated 'password' from server config.")
+            self.result.pop("password", None)
+        # --- *** END CHANGE *** ---
+
         self.result.update({
             "name": name,
             "ip_address": ip_address,
-            "tunnel_user": tunnel_user
+            "tunnel_user": tunnel_user,
+            "obj_type": "server"
         })
+        
+        # Set 'is_provisioned' from checkbox
+        self.result['is_provisioned'] = self.is_provisioned_var.get()
         
         self.grab_release()
         self.destroy()
@@ -788,7 +817,8 @@ class TunnelDialog(BaseDialog):
             "remote_port": remote_port,
             "client_device_id": client_device_id,
             "local_destination": local_dest,
-            "auto_start_on_device_ids": auto_start_list
+            "auto_start_on_device_ids": auto_start_list,
+            "obj_type": "tunnel" # Ensure obj_type is set
         })
         
         self.grab_release()
