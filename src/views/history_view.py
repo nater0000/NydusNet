@@ -27,7 +27,7 @@ class HistoryView(ctk.CTkFrame):
         self.content_viewer = ctk.CTkTextbox(self, state="disabled", wrap="none", font=("Courier New", 12))
         # This will be gridded in _on_version_select
 
-    def enter(self):
+    def on_enter(self):
         """Called by the main controller when this view is shown to refresh data."""
         logging.info("Entering History View.")
         self._populate_file_browser()

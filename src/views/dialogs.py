@@ -4,248 +4,161 @@ from PIL import Image
 import logging
 import re
 import os
+import io
+import tkinter # Added for winfo_exists checks
 
 class ToolTip(ctk.CTkToplevel):
     """
-    A tooltip window that appears after a delay when hovering over a widget.
+    A shared tooltip window that manages its own show/hide delays.
     """
-    def __init__(self, widget, text, delay=500): # Default delay 500ms
-        self.show_after_id = None # ID for the scheduled 'show' task
-        self.delay = delay # Time in ms before showing
-        self._is_valid = False # Flag to track if tooltip is properly initialized
+    def __init__(self, parent, show_delay_ms=500, hide_delay_ms=100):
+        super().__init__(parent)
+        self._parent = parent
+        self.show_delay = show_delay_ms
+        self.hide_delay = hide_delay_ms
+        
+        self.withdraw() # Start hidden
+        self.overrideredirect(True) # No window decorations
+        self.wm_attributes("-topmost", True) # Keep on top
 
-        try:
-            # Ensure the parent widget exists before proceeding
-            if not widget or not widget.winfo_exists():
-                logging.warning("ToolTip's parent widget does not exist. Aborting creation.")
-                return # Do not proceed if widget is invalid
+        self._label = ctk.CTkLabel(self, text="", corner_radius=5,
+                                  fg_color=("#3D3D3D", "#4D4D4D"),
+                                  text_color=("white", "white"),
+                                  wraplength=250, # Max width
+                                  justify="left")
+        self._label.pack(ipadx=5, ipady=3)
+        
+        self._show_id = None
+        self._hide_id = None
+        self._event = None
+        self._text = ""
 
-            super().__init__(widget)
-            self.widget = widget
-            self.text = text
+    def schedule_show(self, event, text: str):
+        """Schedules the tooltip to appear after the show delay."""
+        if self._hide_id:
+            self.after_cancel(self._hide_id)
+            self._hide_id = None
+        
+        if self._show_id:
+            self.after_cancel(self._show_id)
+            self._show_id = None
 
-            self.withdraw() # Start hidden
-            self.overrideredirect(True) # No window decorations (border, title bar)
+        self._event = event
+        self._text = text
+        
+        self._show_id = self.after(self.show_delay, self._show)
 
-            # Configure the label appearance
-            self.label = ctk.CTkLabel(self, text=self.text, corner_radius=5,
-                                      fg_color=("#3D3D3D", "#4D4D4D"), # Dark gray background
-                                      text_color=("white", "white"), # White text
-                                      wraplength=200, # Max width before wrapping
-                                      justify="left") # Align text left
-            self.label.pack(ipadx=5, ipady=3) # Internal padding
+    def schedule_hide(self, event=None):
+        """Schedules the tooltip to hide after the hide delay."""
+        if self._show_id:
+            self.after_cancel(self._show_id)
+            self._show_id = None
+            
+        if not self._hide_id:
+            self._hide_id = self.after(self.hide_delay, self._hide)
 
-            # Bind events to schedule/cancel showing and hiding
-            self.widget.bind("<Enter>", self.schedule_show, add="+")
-            self.widget.bind("<Leave>", self.cancel_show_and_hide, add="+")
-            # Hide tooltip if the parent widget is destroyed
-            self.widget.bind("<Destroy>", lambda e: self.destroy(), add="+")
-
-            self._is_valid = True # Mark as successfully initialized
-
-        except Exception as e:
-            self._is_valid = False
-            logging.warning(f"ToolTip creation failed: {e}", exc_info=True)
-            # Attempt to destroy self if partially created
-            if self.winfo_exists():
-                try:
-                    self.destroy()
-                except Exception:
-                    pass # Ignore errors during cleanup
-
-    def schedule_show(self, event=None):
-        """Schedules the tooltip to appear after the specified delay."""
-        if not self._is_valid: return
-        self.cancel_show() # Cancel any previously scheduled show
-        self.show_after_id = self.after(self.delay, self.show)
-
-    def cancel_show(self):
-        """Cancels a pending tooltip show task."""
-        if self.show_after_id:
-            try:
-                self.after_cancel(self.show_after_id)
-            except Exception:
-                 pass # Ignore if ID is invalid
-            self.show_after_id = None
-
-    def show(self, event=None):
-        """Calculates position and displays the tooltip."""
-        self.show_after_id = None # Clear scheduled ID as it's running now
-        if not self._is_valid or not hasattr(self, 'widget') or not self.widget.winfo_exists() or not self.winfo_exists():
-            return # Abort if widget or tooltip destroyed
-
-        try:
-            # Get widget position and dimensions
-            x = self.widget.winfo_rootx() + 5 # Small offset from left edge
-            widget_y = self.widget.winfo_rooty()
-            widget_height = self.widget.winfo_height()
-
-            # Calculate preferred position (below widget)
-            preferred_y = widget_y + widget_height + 5
-
-            # Update tooltip geometry to get its required height
-            self.update_idletasks()
-            tip_height = self.winfo_reqheight()
-            tip_width = self.winfo_reqwidth() # Get width too
-
-            # Adjust if tooltip goes off bottom of screen
-            screen_height = self.winfo_screenheight()
-            if preferred_y + tip_height > screen_height:
-                y = widget_y - tip_height - 5 # Position above widget
-            else:
-                y = preferred_y
-
-            # Adjust if tooltip goes off right edge of screen
-            screen_width = self.winfo_screenwidth()
-            if x + tip_width > screen_width:
-                 x = screen_width - tip_width - 5 # Align to right edge
-
-            # Ensure coordinates are non-negative
-            x = max(0, x)
-            y = max(0, y)
-
-            self.geometry(f"+{x}+{y}")
-            self.deiconify() # Show the tooltip window
-            self.lift() # Bring it to the top
-
-        except Exception as e:
-            logging.debug(f"Tooltip show calculation/display failed: {e}")
-            self.withdraw() # Ensure it's hidden on error
-
-    def cancel_show_and_hide(self, event=None):
-        """Cancels any pending show and hides the tooltip immediately."""
-        self.cancel_show()
-        self.hide()
-
-    def hide(self, event=None):
-        """Hides the tooltip window."""
-        if not self._is_valid or not self.winfo_exists(): return
-        try:
-            self.withdraw()
-        except Exception:
-            pass # Ignore errors if window is already gone
-
-    def destroy(self):
-        """Safely destroys the tooltip and unbinds events."""
-        if not hasattr(self, '_is_valid') or not self._is_valid:
-            # If initialization failed or already destroyed, just ensure super is called if possible
-            if self.winfo_exists():
-                 try: super().destroy()
-                 except Exception: pass
+    def _show(self):
+        """Internal method to display the tooltip."""
+        if not self._text or not self._event:
             return
+            
+        try:
+            if not self.winfo_exists(): return
+        except Exception: return
 
-        self._is_valid = False # Mark as destroyed
-        self.cancel_show() # Cancel any pending show timer
+        self._label.configure(text=self._text)
+        
+        x = self._event.x_root + 15 
+        y = self._event.y_root + 10 
 
-        # Safely unbind events from the parent widget
-        if hasattr(self, 'widget') and self.widget and self.widget.winfo_exists():
-            try:
-                self.widget.unbind("<Enter>")
-                self.widget.unbind("<Leave>")
-                self.widget.unbind("<Destroy>")
-            except Exception:
-                pass # Ignore errors if widget is gone
+        self.update_idletasks()
+        tip_height = self.winfo_reqheight()
+        tip_width = self.winfo_reqwidth()
 
-        # Destroy the Toplevel window itself
-        if self.winfo_exists():
-            try:
-                super().destroy()
-            except Exception as e:
-                 logging.warning(f"Error during Tooltip super().destroy(): {e}")
+        screen_height = self.winfo_screenheight()
+        if y + tip_height > screen_height:
+            y = self._event.y_root - tip_height - 5 
 
+        screen_width = self.winfo_screenwidth()
+        if x + tip_width > screen_width:
+             x = screen_width - tip_width - 5
+
+        x = max(0, x); y = max(0, y)
+
+        self.geometry(f"+{x}+{y}")
+        self.deiconify()
+        self.lift()
+        self._show_id = None
+
+    def _hide(self):
+        """Internal method to hide the window."""
+        self._show_id = None
+        self._hide_id = None
+        try:
+            if self.winfo_exists():
+                self.withdraw()
+        except Exception:
+            pass
 
 class BaseDialog(ctk.CTkToplevel):
-    """Base class for modal dialogs."""
+    """
+    Base class for modal dialogs.
+    Creates a toplevel window, grabs focus, and waits for a result.
+    """
     def __init__(self, parent, title="Dialog"):
         super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
         self.title(title)
-        self.result = None # Stores the dialog result (e.g., entered data, True/False)
-        self._parent = parent # Reference to the parent window
-        self._center_window_after_id = None # To store the ID of the centering task
+        
+        self.result = None # Stores the dialog result
+        self._parent = parent # Store parent for centering
 
-        try:
-            self.transient(parent) # Associate dialog with parent window
-            self.grab_set() # Make dialog modal (block interaction with parent)
-            self.protocol("WM_DELETE_WINDOW", self._on_cancel) # Handle window close ('X') button
-
-            # Schedule centering task, store its ID
-            self._center_window_after_id = self.after(50, self._center_window)
-
-        except Exception as e:
-            logging.error(f"Error initializing BaseDialog: {e}", exc_info=True)
-            # Ensure dialog is destroyed if init fails partially
-            if self.winfo_exists(): self.destroy()
-
+        # Main content frame
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        self.main_frame.grid_columnconfigure(0, weight=1)
 
     def _center_window(self):
-        """Centers the dialog on the screen."""
-        self._center_window_after_id = None # Clear the stored ID as the task is running
-
-        # Abort if the window was destroyed before this could run
-        if not self.winfo_exists():
-            return
-
+        """Centers the dialog over its parent window."""
         try:
-            self.update_idletasks() # Ensure dimensions are calculated
-            width = self.winfo_width()
-            height = self.winfo_height()
-            screen_width = self.winfo_screenwidth()
-            screen_height = self.winfo_screenheight()
-            x = (screen_width - width) // 2
-            y = (screen_height - height) // 2
-            # Prevent negative coordinates if dialog is larger than screen
-            x = max(0, x)
-            y = max(0, y)
+            self.update_idletasks()
+            parent_x = self._parent.winfo_x()
+            parent_y = self._parent.winfo_y()
+            parent_width = self._parent.winfo_width()
+            parent_height = self._parent.winfo_height()
+            
+            dialog_width = self.winfo_width()
+            dialog_height = self.winfo_height()
+            
+            x = parent_x + (parent_width // 2) - (dialog_width // 2)
+            y = parent_y + (parent_height // 2) - (dialog_height // 2)
+            
             self.geometry(f"+{x}+{y}")
         except Exception as e:
             logging.warning(f"Error centering dialog: {e}")
 
     def _on_ok(self, event=None):
-        """Default action for 'OK' or 'Save' buttons."""
-        # Result should be set by subclass before calling this
-        self.destroy() # Consolidate cleanup in destroy
+        """Handles OK button click or Enter key press."""
+        self.result = True # Mark as successful
+        self.grab_release()
+        self.destroy()
 
-    def _on_cancel(self):
-        """Default action for 'Cancel' or window close button."""
-        self.result = None # Ensure result is None on cancel
-        self.destroy() # Consolidate cleanup in destroy
+    def _on_cancel(self, event=None):
+        """Handles Cancel button click or window close."""
+        self.result = None # Mark as cancelled
+        self.grab_release()
+        self.destroy()
 
     def get_input(self):
-        """Waits for the dialog to close and returns the result."""
-        # Only wait if the window still exists
-        if self.winfo_exists():
-             try:
-                 self.wait_window()
-             except Exception as e:
-                  logging.warning(f"Error during wait_window: {e}") # Handle potential errors if destroyed unexpectedly
+        """Waits for the dialog to be destroyed and returns the result."""
+        self.resizable(False, False)
+        self._center_window() # Center *after* all widgets are created
+        self.wait_window(self)
         return self.result
-
-    def destroy(self):
-        """Safely cancels pending tasks, releases grab, and destroys the window."""
-        # 1. Cancel pending 'after' tasks
-        if self._center_window_after_id:
-            try:
-                self.after_cancel(self._center_window_after_id)
-            except Exception:
-                pass # Task might already be cancelled or invalid
-            self._center_window_after_id = None
-
-        # 2. Safely release grab (if active)
-        try:
-            # Check grab_status only if window exists
-            if self.winfo_exists() and self.grab_status() == "global":
-                self.grab_release()
-        except Exception:
-            pass # Window might already be gone or grab failed
-
-        # 3. Call the original CTkToplevel destroy only if it still exists
-        if self.winfo_exists():
-            try:
-                super().destroy()
-            except Exception as e:
-                 logging.warning(f"Error during BaseDialog super().destroy(): {e}")
-
-
+    
+# --- UnlockDialog Class (Original Structure) ---
 class UnlockDialog(BaseDialog):
     """Dialog for entering master password or setting it on first run."""
     def __init__(self, parent, first_run: bool = False, controller=None, title=None):
@@ -268,15 +181,17 @@ class UnlockDialog(BaseDialog):
         self.hide_icon = None
         self.bg_image = None
         self.use_image_icons = False
+        placeholder_img = None # Define placeholder ref
         try:
             if hasattr(self.controller, 'images') and self.controller.images:
                 self.show_icon = self.controller.images.get("eye-show")
                 self.hide_icon = self.controller.images.get("eye-hide")
                 self.bg_image = self.controller.images.get("bg_gradient")
 
-                # Check if essential icons were loaded (not red squares)
-                # Assuming placeholder is a red square Image object
+                # Define placeholder image for comparison
                 placeholder_img = ctk.CTkImage(Image.new('RGB', (20,20), color='red'), size=(20,20))._light_image
+
+                # Check if essential icons were loaded (not red squares)
                 if self.show_icon and self.show_icon._light_image != placeholder_img and \
                    self.hide_icon and self.hide_icon._light_image != placeholder_img:
                     self.use_image_icons = True
@@ -297,14 +212,14 @@ class UnlockDialog(BaseDialog):
         self.grid_columnconfigure(0, weight=1)
 
         # Background Image (Optional)
-        if self.bg_image and self.bg_image._light_image != placeholder_img:
+        bg_frame_fg = "transparent" # Default background
+        # Check if bg_image loaded correctly
+        if self.bg_image and placeholder_img and self.bg_image._light_image != placeholder_img:
             self.bg_label = ctk.CTkLabel(self, text="", image=self.bg_image)
             self.bg_label.grid(row=0, column=0, sticky="nsew")
             # Determine fg_color based on appearance mode for better contrast on background
             bg_frame_fg = ctk.ThemeManager.theme["CTkFrame"]["fg_color"]
-        else:
-             # Use default frame background if no image
-            bg_frame_fg = "transparent"
+        # else: use default transparent background
 
         # Centered Content Frame
         self.main_frame = ctk.CTkFrame(self, corner_radius=10, fg_color=bg_frame_fg)
@@ -316,15 +231,18 @@ class UnlockDialog(BaseDialog):
         # Create specific UI elements (unlock or setup)
         if self.first_run:
             self._create_password_setup_ui()
+            self.after(100, lambda: self.entry1.focus_set() if self.winfo_exists() else None)
         else:
             self._create_unlock_ui()
+            self.after(100, lambda: self.entry1.focus_set() if self.winfo_exists() else None)
 
         # Center window after widgets are created (BaseDialog already schedules this)
 
     def _toggle_password_visibility(self, entry, button):
         if not entry or not button: return
         try:
-            if entry.cget("show") == "*":
+            current_show = entry.cget("show")
+            if current_show == "*":
                 entry.configure(show="")
                 button.configure(image=self.hide_icon if self.use_image_icons else None,
                                  text=self.hide_icon if not self.use_image_icons else "")
@@ -346,7 +264,7 @@ class UnlockDialog(BaseDialog):
         self.entry1 = ctk.CTkEntry(entry_frame, show="*", width=200)
         self.entry1.pack(side="left")
         self.entry1.bind("<Return>", self._on_ok)
-        # Focus is set by app.py using after(50, ...)
+        # Focus is set by app.py using after(150, ...)
 
         toggle_btn1 = ctk.CTkButton(entry_frame, image=self.show_icon if self.use_image_icons else None,
                                     text=self.show_icon if not self.use_image_icons else "",
@@ -368,7 +286,7 @@ class UnlockDialog(BaseDialog):
         entry_frame1.pack(padx=30, pady=5)
         self.entry1 = ctk.CTkEntry(entry_frame1, show="*", width=200)
         self.entry1.pack(side="left")
-        # Focus is set by app.py using after(50, ...)
+        # Focus is set by app.py using after(150, ...)
         toggle_btn1 = ctk.CTkButton(entry_frame1, image=self.show_icon if self.use_image_icons else None, text=self.show_icon if not self.use_image_icons else "", width=28, anchor="center", command=lambda: self._toggle_password_visibility(self.entry1, toggle_btn1))
         toggle_btn1.pack(side="left", padx=(5, 0))
 
@@ -418,6 +336,7 @@ class UnlockDialog(BaseDialog):
              self.destroy() # Just close
 
 
+# --- LoadingDialog Class (Original Structure) ---
 class LoadingDialog(BaseDialog):
     """Modal dialog showing an indeterminate progress bar."""
     def __init__(self, parent, title="Loading..."):
@@ -446,505 +365,558 @@ class LoadingDialog(BaseDialog):
         """Override destroy to stop the progress bar animation."""
         if hasattr(self, 'progressbar'):
             try:
-                self.progressbar.stop()
+                # Check if progressbar still exists before stopping
+                if self.progressbar.winfo_exists():
+                    self.progressbar.stop()
             except Exception as e:
                  logging.warning(f"Error stopping progress bar: {e}")
         super().destroy() # Call BaseDialog's safe destroy
 
 
 class ProvisionDialog(BaseDialog):
-    """Dialog to get sudo credentials for server provisioning."""
-    def __init__(self, parent, server_name, server_ip):
-        super().__init__(parent, title=f"Setup Server: {server_name}")
-        # Main frame for content padding
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
+    """Asks for credentials needed for server provisioning."""
+    def __init__(self, parent, server_name: str, server_ip: str, title="Server Credentials"):
+        super().__init__(parent, title=title)
+        
+        self.result = None # Stores dict on OK
 
-        ctk.CTkLabel(content_frame, text=f"Enter administrative credentials for {server_ip}.\nThese are used once for setup and are NOT saved.",
-                     wraplength=350, justify="left").pack(pady=(0, 15))
+        ctk.CTkLabel(self.main_frame, text=f"Enter credentials for: {server_name} ({server_ip})",
+                       font=ctk.CTkFont(weight="bold")).pack(pady=(0, 10))
+        ctk.CTkLabel(self.main_frame, text="These are used once for setup and are NOT saved.",
+                       font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(0, 15))
 
-        ctk.CTkLabel(content_frame, text="Sudo Username:").pack(anchor="w")
-        self.user_entry = ctk.CTkEntry(content_frame, width=250)
-        self.user_entry.pack(pady=(0, 10), fill="x")
-        self.user_entry.insert(0, "root") # Default user
+        grid_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        grid_frame.pack(fill="x")
+        grid_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(content_frame, text="Sudo Password:").pack(anchor="w")
-        self.pass_entry = ctk.CTkEntry(content_frame, show="*", width=250)
-        self.pass_entry.pack(pady=(0, 15), fill="x")
-        self.pass_entry.bind("<Return>", self._on_ok) # Allow Enter to submit
+        ctk.CTkLabel(grid_frame, text="Admin User:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.user_entry = ctk.CTkEntry(grid_frame, placeholder_text="e.g., root")
+        self.user_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
 
-        # Focus password entry after dialog appears
-        self.after(100, self.pass_entry.focus_set)
+        ctk.CTkLabel(grid_frame, text="Admin Password:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.pass_entry = ctk.CTkEntry(grid_frame, show="*")
+        self.pass_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
 
-        button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        button_frame.pack(pady=(10, 0))
-        ctk.CTkButton(button_frame, text="Begin Setup", command=self._on_ok).pack(side="left", padx=10)
-        ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=10)
+        ctk.CTkLabel(grid_frame, text="Certbot Email:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.email_entry = ctk.CTkEntry(grid_frame, placeholder_text="For Let's Encrypt SSL alerts")
+        self.email_entry.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        button_frame.pack(pady=20)
+        
+        self.ok_button = ctk.CTkButton(button_frame, text="Start Provisioning", command=self._on_ok)
+        self.ok_button.pack(side="left", padx=10)
+        
+        self.cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel,
+                                           fg_color="transparent", border_width=1)
+        self.cancel_button.pack(side="left", padx=10)
+        
+        self.user_entry.focus_set()
 
     def _on_ok(self, event=None):
         user = self.user_entry.get().strip()
         password = self.pass_entry.get() # Don't strip password
-        if not user or not password:
-            ErrorDialog(self, message="Username and Password are required.")
-            return # Keep dialog open
-        self.result = {"user": user, "password": password}
-        super()._on_ok() # Close dialog
+        email = self.email_entry.get().strip()
+        
+        if not user:
+             ErrorDialog(self, title="Input Error", message="Admin User cannot be empty.")
+             return
+        if not password:
+             ErrorDialog(self, title="Input Error", message="Admin Password cannot be empty.")
+             return
+        if not email or "@" not in email or "." not in email:
+             ErrorDialog(self, title="Input Error", message="Please enter a valid email for Certbot.")
+             return
+             
+        self.result = {"user": user, "password": password, "email": email}
+        self.grab_release()
+        self.destroy()
 
 
-class ProvisioningLogDialog(BaseDialog):
-    """Dialog to display logs during server provisioning."""
-    def __init__(self, parent, server_name):
-        super().__init__(parent, title=f"Setting up {server_name}...")
-        self.geometry("600x400")
-        # Prevent closing until provisioning completes or fails
-        self.protocol("WM_DELETE_WINDOW", lambda: logging.warning("Attempted to close provisioning log during operation."))
-
-        self.textbox = ctk.CTkTextbox(self, wrap="none", font=("Courier New", 11)) # Monospaced font, no wrap
-        self.textbox.pack(expand=True, fill="both", padx=10, pady=(10, 5))
-        self.textbox.configure(state="disabled") # Read-only
-
-        self.status_label = ctk.CTkLabel(self, text="Provisioning in progress...")
-        self.status_label.pack(pady=5)
-
-        self.close_button = ctk.CTkButton(self, text="Close", command=self._on_cancel, state="disabled")
-        self.close_button.pack(pady=10)
-
-    def update_log(self, log_lines):
-        """Updates the textbox content safely."""
-        if not self.winfo_exists(): return # Abort if window destroyed
-
-        try:
-            self.textbox.configure(state="normal")
-            # Efficient update: replace content only if it changed
-            # current_content = self.textbox.get("1.0", "end-1c") # Less efficient for long logs
-            new_content = "\n".join(log_lines)
-            # if current_content != new_content:
-            self.textbox.delete("1.0", "end")
-            self.textbox.insert("1.0", new_content)
-            self.textbox.see("end") # Auto-scroll to bottom
-            self.textbox.configure(state="disabled")
-        except Exception as e:
-            logging.error(f"Error updating provisioning log: {e}")
-            # Ensure textbox is disabled even on error
-            if self.winfo_exists(): self.textbox.configure(state="disabled")
-
-
-    def complete(self, success):
-        """Updates status label and enables close button on completion."""
-        if not self.winfo_exists(): return # Abort if window destroyed
-
-        if success:
-            self.status_label.configure(text="✅ Setup Complete!", text_color="green")
-        else:
-            self.status_label.configure(text="❌ Setup Failed. Check logs above for details.", text_color="red")
-        self.close_button.configure(state="normal") # Enable close button
-        # Allow closing via 'X' button now
+class LogViewerDialog(BaseDialog):
+    """A non-modal dialog to display log content."""
+    def __init__(self, parent, log_content: str, title="View Logs"):
+        # Override BaseDialog __init__ for non-modal behavior
+        super(BaseDialog, self).__init__(parent) # Call CTkToplevel init
+        
+        self.transient(parent)
+        # self.grab_set() # --- DO NOT GRAB ---
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.title(title)
+        
+        self.result = None
+        self._parent = parent
 
+        self.main_frame = ctk.CTkFrame(self) # Use self, not self.main_frame
+        self.main_frame.pack(fill="both", expand=True)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=1)
+
+        self.textbox = ctk.CTkTextbox(self.main_frame, wrap="none", font=("Courier New", 12))
+        self.textbox.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.textbox.insert("1.0", log_content or "No log content available.")
+        self.textbox.configure(state="disabled")
+        
+        # Auto-scroll to end
+        self.textbox.see("end")
+
+        button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        button_frame.grid(row=1, column=0, pady=(0, 10))
+
+        # Add a refresh button? (Maybe later)
+        
+        self.ok_button = ctk.CTkButton(button_frame, text="Close", command=self._on_cancel, width=100)
+        self.ok_button.pack()
+        
+        # --- Center and show (since get_input isn't called) ---
+        self.resizable(True, True)
+        self.geometry("700x500") # Start with a good size for logs
+        self._center_window()
+        self.ok_button.focus_set()
+
+    def get_input(self):
+        """Override to just show the window, not wait."""
+        # This dialog is non-modal, so get_input shouldn't be called.
+        # If it is, just log it.
+        logging.warning("LogViewerDialog.get_input() called, but it's non-modal.")
+        return None
+    
+class ProvisioningLogDialog(LogViewerDialog):
+    """A log viewer that can be updated and shows a complete/failed status."""
+    def __init__(self, parent, server_name: str):
+        super().__init__(parent, log_content="Starting provisioning...\n\n", title=f"Provisioning: {server_name}")
+        
+        self.progressbar = ctk.CTkProgressBar(self.main_frame, mode="indeterminate")
+        self.progressbar.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        self.progressbar.start()
+        
+        self.ok_button.configure(state="disabled") # Can't close until done
+        self.all_logs = ["Starting provisioning...\n"]
+
+    def update_log(self, log_lines: list):
+        """Appends new lines to the log."""
+        if not self.textbox or not self.textbox.winfo_exists(): return
+        
+        self.textbox.configure(state="normal")
+        for line in log_lines:
+            self.all_logs.append(line)
+            self.textbox.insert("end", line + "\n")
+        self.textbox.configure(state="disabled")
+        self.textbox.see("end")
+
+    def complete(self, success: bool):
+        """Marks the provisioning as complete."""
+        if not self.textbox or not self.textbox.winfo_exists(): return
+        
+        self.progressbar.stop()
+        self.progressbar.grid_remove()
+        
+        self.textbox.configure(state="normal")
+        if success:
+            self.textbox.insert("end", "\n--- PROVISIONING COMPLETE (SUCCESS) ---\n")
+            self.title(f"Provisioning Succeeded: {self.title().split(': ')[1]}")
+        else:
+            self.textbox.insert("end", "\n--- PROVISIONING FAILED ---\n")
+            self.title(f"Provisioning FAILED: {self.title().split(': ')[1]}")
+        
+        self.textbox.configure(state="disabled")
+        self.textbox.see("end")
+        self.ok_button.configure(state="normal") # Enable close button
 
 class ServerDialog(BaseDialog):
-    """Dialog for adding or editing server details."""
-    def __init__(self, parent, title="Server Details", initial_data=None):
+    """Dialog to add or edit a Server configuration."""
+    def __init__(self, parent, controller, title="Add Server", initial_data=None):
         super().__init__(parent, title=title)
+        
+        self.controller = controller
+        # --- FIX: Get shared tooltip instance ---
+        self.tooltip = controller.tooltip if hasattr(controller, 'tooltip') else None
+
         self.initial_data = initial_data or {}
+        self.result = None # Will be a dict on OK
+        
+        # --- Form Frame ---
+        form_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        form_frame.pack(fill="x", expand=True)
+        form_frame.grid_columnconfigure(1, weight=1)
+        
+        row = 0
+        ctk.CTkLabel(form_frame, text="Server Name:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.name_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'My VPS (Linode)'")
+        self.name_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        
+        row += 1
+        ctk.CTkLabel(form_frame, text="IP Address / Host:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.ip_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., '123.45.67.89' or 'server.example.com'")
+        self.ip_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
-        # Use a frame for padding
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
+        row += 1
+        ctk.CTkLabel(form_frame, text="Tunnel User:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.tunnel_user_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'tunnel' (default)")
+        self.tunnel_user_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        
+        # --- FIX: Apply tooltip using bind ---
+        if self.tooltip:
+             tooltip_text = "Optional: Override the default 'tunnel' user. Leave blank for default."
+             self.tunnel_user_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+             self.tunnel_user_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
-        content_frame.grid_columnconfigure(1, weight=1) # Allow entry fields to expand
-
-        # Server Name
-        ctk.CTkLabel(content_frame, text="Server Name:").grid(row=0, column=0, padx=(0,10), pady=5, sticky="w")
-        self.name_entry = ctk.CTkEntry(content_frame)
-        self.name_entry.grid(row=0, column=1, pady=5, sticky="ew")
+        # --- Load initial data ---
         self.name_entry.insert(0, self.initial_data.get("name", ""))
-
-        # IP Address
-        ctk.CTkLabel(content_frame, text="IP Address:").grid(row=1, column=0, padx=(0,10), pady=5, sticky="w")
-        self.ip_entry = ctk.CTkEntry(content_frame)
-        self.ip_entry.grid(row=1, column=1, pady=5, sticky="ew")
         self.ip_entry.insert(0, self.initial_data.get("ip_address", ""))
-
-        # Tunnel Username (Optional Override)
-        ctk.CTkLabel(content_frame, text="Tunnel User:").grid(row=2, column=0, padx=(0,10), pady=5, sticky="w")
-        self.tunnel_user_entry = ctk.CTkEntry(content_frame)
-        self.tunnel_user_entry.grid(row=2, column=1, pady=5, sticky="ew")
         self.tunnel_user_entry.insert(0, self.initial_data.get("tunnel_user", ""))
-        ToolTip(self.tunnel_user_entry, "Optional: Override the default 'tunnel' user used for SSH connections. Leave blank for default.")
 
-        # Manual Provision Override Checkbox
-        self.provisioned_var = ctk.BooleanVar(value=self.initial_data.get("is_provisioned", False))
-        self.provisioned_check = ctk.CTkCheckBox(content_frame, text="Mark as Setup Complete (Manual Override)",
-                                                 variable=self.provisioned_var)
-        self.provisioned_check.grid(row=3, column=0, columnspan=2, padx=0, pady=10, sticky="w")
-        ToolTip(self.provisioned_check, "Manually mark this server as ready for tunnels, skipping automated setup steps.")
-
-        # Buttons
-        button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        button_frame.grid(row=4, column=0, columnspan=2, pady=(15, 0)) # Add padding above buttons
-        ctk.CTkButton(button_frame, text="Save", command=self._on_ok).pack(side="left", padx=10)
-        ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=10)
-
-        # Focus name entry initially
-        self.after(100, self.name_entry.focus_set)
+        # --- Button Frame ---
+        button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        button_frame.pack(pady=20)
+        
+        self.ok_button = ctk.CTkButton(button_frame, text="Save", command=self._on_ok)
+        self.ok_button.pack(side="left", padx=10)
+        
+        self.cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel,
+                                           fg_color="transparent", border_width=1)
+        self.cancel_button.pack(side="left", padx=10)
+        
+        self.name_entry.focus_set()
+        self.bind("<Return>", self._on_ok)
 
     def _on_ok(self, event=None):
         name = self.name_entry.get().strip()
         ip_address = self.ip_entry.get().strip()
-        tunnel_user = self.tunnel_user_entry.get().strip() # Use empty string if blank
-        is_provisioned = self.provisioned_var.get()
-
+        tunnel_user = self.tunnel_user_entry.get().strip() or "tunnel" # Default to 'tunnel'
+        
         if not name:
-            ErrorDialog(self, message="Server Name is required.")
-            return
+             ErrorDialog(self, title="Input Error", message="Server Name cannot be empty.")
+             return
         if not ip_address:
-             ErrorDialog(self, message="IP Address is required.")
+             ErrorDialog(self, title="Input Error", message="IP Address / Host cannot be empty.")
              return
-
-        # Basic IP/domain validation (very lenient)
-        if not re.match(r"^[a-zA-Z0-9\.\-:]+$", ip_address):
-             ErrorDialog(self, message="Invalid characters in IP Address or Hostname.")
-             return
-
-        # Prepare result dictionary
-        self.result = self.initial_data.copy() # Start with existing data
+             
+        # Merge new data with initial data (to preserve 'id', 'is_provisioned', etc.)
+        self.result = self.initial_data.copy()
         self.result.update({
             "name": name,
             "ip_address": ip_address,
-            "tunnel_user": tunnel_user,
-            "is_provisioned": is_provisioned,
-            "type": "server" # Ensure type is set
+            "tunnel_user": tunnel_user
         })
-        super()._on_ok() # Close dialog
-
+        
+        self.grab_release()
+        self.destroy()
 
 class TunnelDialog(BaseDialog):
-    """Dialog for adding or editing tunnel configuration."""
-    def __init__(self, parent, controller, title="Tunnel Details", initial_data=None):
+    """Dialog to add or edit a Tunnel configuration."""
+    def __init__(self, parent, controller, title="Add Tunnel", initial_data=None):
         super().__init__(parent, title=title)
+        
         self.controller = controller
+        # --- FIX: Get shared tooltip instance ---
+        self.tooltip = controller.tooltip if hasattr(controller, 'tooltip') else None
+
         self.initial_data = initial_data or {}
+        self.result = None # Will be a dict on OK
 
-        # Use a frame for padding
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
+        # --- Get data for dropdowns ---
+        self.client_map, self.client_names = self.controller.get_clients_for_dropdown()
+        self.servers_map = {s.get('name', 'N/A'): s.get('id', 'N/A') for s in self.controller.get_servers()}
+        self.server_names = sorted(self.servers_map.keys())
 
-        content_frame.grid_columnconfigure(1, weight=1) # Entry/menu column expands
+        # --- Form Frame ---
+        form_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        form_frame.pack(fill="x", expand=True)
+        form_frame.grid_columnconfigure(1, weight=1)
+        
+        row = 0
+        ctk.CTkLabel(form_frame, text="Hostname:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.hostname_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'app.example.com' or 'nas'")
+        self.hostname_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        # --- FIX: Apply tooltip using bind ---
+        if self.tooltip:
+             tooltip_text = "The public-facing name for this tunnel (e.g., 'app.example.com')."
+             self.hostname_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+             self.hostname_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
-        # Server Selection
-        ctk.CTkLabel(content_frame, text="Server:").grid(row=0, column=0, padx=(0,10), pady=5, sticky="w")
-        self.server_map = {s['name']: s['id'] for s in self.controller.get_servers() if s.get('is_provisioned')}
-        server_names = sorted(list(self.server_map.keys())) or ["No provisioned servers available"]
-        self.server_menu = ctk.CTkOptionMenu(content_frame, values=server_names)
-        self.server_menu.grid(row=0, column=1, pady=5, sticky="ew")
-        if not self.server_map: self.server_menu.configure(state="disabled")
+        row += 1
+        ctk.CTkLabel(form_frame, text="Server:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.server_menu = ctk.CTkOptionMenu(form_frame, values=self.server_names, command=self._on_server_select)
+        if not self.server_names:
+            self.server_menu.configure(values=["No servers configured"], state="disabled")
+        self.server_menu.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
-        # Managed By (Device Selection)
-        ctk.CTkLabel(content_frame, text="Managed By:").grid(row=1, column=0, padx=(0,10), pady=5, sticky="w")
-        self.client_map, client_names = self.controller.get_clients_for_dropdown()
-        self.client_menu = ctk.CTkOptionMenu(content_frame, values=client_names)
-        self.client_menu.grid(row=1, column=1, pady=5, sticky="ew")
-        if not client_names: self.client_menu.configure(state="disabled", values=["Initializing..."])
+        row += 1
+        ctk.CTkLabel(form_frame, text="Remote Port:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.remote_port_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 10001 (must be unique on server)")
+        self.remote_port_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        # --- FIX: Apply tooltip using bind ---
+        if self.tooltip:
+             tooltip_text = "The port the *server* will listen on. Must be unique for this server."
+             self.remote_port_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+             self.remote_port_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
-        # Hostname Entry
-        ctk.CTkLabel(content_frame, text="Hostname:").grid(row=2, column=0, padx=(0,10), pady=5, sticky="w")
-        hostname_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        hostname_frame.grid(row=2, column=1, pady=5, sticky="ew")
-        hostname_frame.grid_columnconfigure(0, weight=1) # Make entry expand
-        self.hostname_entry = ctk.CTkEntry(hostname_frame)
-        self.hostname_entry.grid(row=0, column=0, sticky="ew")
-        hostname_help = ctk.CTkLabel(hostname_frame, text="?", width=20, cursor="hand2")
-        hostname_help.grid(row=0, column=1, padx=(5,0))
-        ToolTip(hostname_help, "A friendly name for this tunnel (e.g., 'plex', 'web-app'). Used for display only.")
+        row += 1
+        ctk.CTkLabel(form_frame, text="Client Device:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.client_menu = ctk.CTkOptionMenu(form_frame, values=self.client_names)
+        if not self.client_names:
+             self.client_menu.configure(values=["No devices available"], state="disabled")
+        self.client_menu.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
-        # Remote Port Entry
-        ctk.CTkLabel(content_frame, text="Remote Port:").grid(row=3, column=0, padx=(0,10), pady=5, sticky="w")
-        remote_port_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        remote_port_frame.grid(row=3, column=1, pady=5, sticky="ew")
-        remote_port_frame.grid_columnconfigure(0, weight=1)
-        self.remote_port_entry = ctk.CTkEntry(remote_port_frame)
-        self.remote_port_entry.grid(row=0, column=0, sticky="ew")
-        remote_port_help = ctk.CTkLabel(remote_port_frame, text="?", width=20, cursor="hand2")
-        remote_port_help.grid(row=0, column=1, padx=(5,0))
-        ToolTip(remote_port_help, "The public port on your server that will receive traffic (e.g., 80, 443, 8080). This port must be unique per server.")
+        row += 1
+        ctk.CTkLabel(form_frame, text="Local Destination:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        self.local_dest_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'localhost:8080' or '192.168.1.10:80'")
+        self.local_dest_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        # --- FIX: Apply tooltip using bind ---
+        if self.tooltip:
+             tooltip_text = "The destination the *client device* will forward traffic to (e.g., 'localhost:3000')."
+             self.local_dest_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+             self.local_dest_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
-        # Local Destination Entry
-        ctk.CTkLabel(content_frame, text="Local Destination:").grid(row=4, column=0, padx=(0,10), pady=5, sticky="w")
-        local_dest_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        local_dest_frame.grid(row=4, column=1, pady=5, sticky="ew")
-        local_dest_frame.grid_columnconfigure(0, weight=1)
-        self.local_dest_entry = ctk.CTkEntry(local_dest_frame)
-        self.local_dest_entry.grid(row=0, column=0, sticky="ew")
-        local_dest_help = ctk.CTkLabel(local_dest_frame, text="?", width=20, cursor="hand2")
-        local_dest_help.grid(row=0, column=1, padx=(5,0))
-        ToolTip(local_dest_help, "Local address and port of the service (e.g., 'localhost:3000', '192.168.1.50:8123'). Use localhost:PORT if service is on the managing PC.")
+        row += 1
+        self.auto_start_var = ctk.StringVar(value="on")
+        self.auto_start_check = ctk.CTkCheckBox(form_frame, text="Auto-start on this device?",
+                                                variable=self.auto_start_var, onvalue="on", offvalue="off")
+        self.auto_start_check.grid(row=row, column=1, padx=10, pady=10, sticky="w")
+        # --- FIX: Apply tooltip using bind ---
+        if self.tooltip:
+             tooltip_text = "If checked, this tunnel will try to start when the app launches on *this* device."
+             self.auto_start_check.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+             self.auto_start_check.bind("<Leave>", self.tooltip.schedule_hide)
 
-        # Set initial values from initial_data or defaults
-        if self.initial_data.get("server_id"):
-             for name, sid in self.server_map.items():
-                if sid == self.initial_data["server_id"]:
-                    self.server_menu.set(name); break
-        if self.initial_data.get("assigned_client_id"):
-            for name, cid in self.client_map.items():
-                if cid == self.initial_data["assigned_client_id"]:
-                    self.client_menu.set(name); break
-        else: # Default to "This Device" if creating new or unassigned
-            my_name = f"{self.controller.get_my_device_name()} (This Device)"
-            if my_name in client_names:
-                self.client_menu.set(my_name)
-
+        # --- Load initial data ---
         self.hostname_entry.insert(0, self.initial_data.get("hostname", ""))
-        self.remote_port_entry.insert(0, str(self.initial_data.get("remote_port", "")))
-        self.local_dest_entry.insert(0, self.initial_data.get("local_destination", "localhost:8080")) # Default
+        self.remote_port_entry.insert(0, self.initial_data.get("remote_port", ""))
+        self.local_dest_entry.insert(0, self.initial_data.get("local_destination", ""))
+        
+        # Set server dropdown
+        initial_server_id = self.initial_data.get("server_id")
+        for name, server_id in self.servers_map.items():
+            if server_id == initial_server_id:
+                self.server_menu.set(name); break
+        
+        # Set client dropdown
+        initial_client_id = self.initial_data.get("client_device_id")
+        for name, client_id in self.client_map.items():
+            if client_id == initial_client_id:
+                self.client_menu.set(name); break
+        
+        # Set auto-start (Handle 'auto_start_on_device_ids' logic)
+        my_device_id = self.controller.get_my_device_id()
+        auto_start_list = self.initial_data.get("auto_start_on_device_ids", [])
+        if my_device_id in auto_start_list:
+             self.auto_start_var.set("on")
+        else:
+             self.auto_start_var.set("off")
+        # Disable checkbox if 'This Device' isn't the selected client
+        self._on_client_select(self.client_menu.get()) 
+        self.client_menu.configure(command=self._on_client_select) # Add command
 
-        # Enabled Checkbox
-        self.enabled_var = ctk.BooleanVar(value=self.initial_data.get("enabled", False))
-        self.enabled_check = ctk.CTkCheckBox(content_frame, text="Start tunnel automatically when app starts", variable=self.enabled_var)
-        self.enabled_check.grid(row=5, column=1, padx=0, pady=10, sticky="w") # Align left under entry
+        # --- Button Frame ---
+        button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        button_frame.pack(pady=20)
+        
+        self.ok_button = ctk.CTkButton(button_frame, text="Save", command=self._on_ok)
+        self.ok_button.pack(side="left", padx=10)
+        
+        self.cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel,
+                                           fg_color="transparent", border_width=1)
+        self.cancel_button.pack(side="left", padx=10)
+        
+        self.hostname_entry.focus_set()
+        self.bind("<Return>", self._on_ok)
 
-        # Buttons
-        button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        button_frame.grid(row=6, column=0, columnspan=2, pady=(15, 0)) # Padding above buttons
-        ctk.CTkButton(button_frame, text="Save", command=self._on_ok).pack(side="left", padx=10)
-        ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=10)
+    def _on_server_select(self, server_name: str):
+        """(Future) Could be used to check for port conflicts."""
+        pass 
 
-        # Focus hostname entry initially
-        self.after(100, self.hostname_entry.focus_set)
-
+    def _on_client_select(self, client_name: str):
+        """Enables/Disables the auto-start checkbox based on client selection."""
+        selected_client_id = self.client_map.get(client_name)
+        my_device_id = self.controller.get_my_device_id()
+        
+        if selected_client_id == my_device_id:
+             self.auto_start_check.configure(state="normal")
+        else:
+             self.auto_start_check.configure(state="disabled")
+             self.auto_start_var.set("off") # Uncheck if not this device
 
     def _on_ok(self, event=None):
-        try:
-            selected_server_name = self.server_menu.get()
-            selected_client_name = self.client_menu.get()
+        hostname = self.hostname_entry.get().strip()
+        remote_port = self.remote_port_entry.get().strip()
+        local_dest = self.local_dest_entry.get().strip()
+        server_name = self.server_menu.get()
+        client_name = self.client_menu.get()
+        auto_start = self.auto_start_var.get() == "on"
 
-            # Validate selections
-            if not self.server_map or selected_server_name not in self.server_map:
-                ErrorDialog(self, message="A valid 'Server' (must be set up/provisioned) must be selected.")
-                return
-            if not self.client_map or selected_client_name not in self.client_map:
-                 ErrorDialog(self, message="A valid device ('Managed By') must be selected.")
-                 return
+        # --- Validation ---
+        if not hostname:
+             ErrorDialog(self, title="Input Error", message="Hostname cannot be empty.")
+             return
+        if not server_name or server_name == "No servers configured":
+             ErrorDialog(self, title="Input Error", message="A server must be selected.")
+             return
+        if not client_name or client_name == "No devices available":
+             ErrorDialog(self, title="Input Error", message="A client device must be selected.")
+             return
+        if not local_dest:
+             ErrorDialog(self, title="Input Error", message="Local Destination cannot be empty.")
+             return
+        if not remote_port.isdigit() or not (1024 < int(remote_port) < 65535):
+             ErrorDialog(self, title="Input Error", message="Remote Port must be a number between 1025 and 65534.")
+             return
+        
+        server_id = self.servers_map.get(server_name)
+        client_device_id = self.client_map.get(client_name)
+        if not server_id or not client_device_id:
+             ErrorDialog(self, title="Internal Error", message="Could not map server or client name to an ID.")
+             return
 
-            server_id = self.server_map.get(selected_server_name)
-            client_id = self.client_map.get(selected_client_name)
+        # --- Handle auto-start list ---
+        my_device_id = self.controller.get_my_device_id()
+        # Get existing list, default to empty list if not present
+        auto_start_list = self.initial_data.get("auto_start_on_device_ids", [])
+        
+        if auto_start: # User wants it on *for this device*
+            if my_device_id not in auto_start_list:
+                 auto_start_list.append(my_device_id)
+        else: # User wants it off *for this device*
+            if my_device_id in auto_start_list:
+                 auto_start_list.remove(my_device_id)
 
-            # Get and validate inputs
-            hostname = self.hostname_entry.get().strip()
-            remote_port_str = self.remote_port_entry.get().strip()
-            local_destination = self.local_dest_entry.get().strip()
-
-            if not hostname:
-                ErrorDialog(self, message="Hostname is required.")
-                return
-            if not remote_port_str:
-                ErrorDialog(self, message="Remote Port is required.")
-                return
-            if not local_destination:
-                 ErrorDialog(self, message="Local Destination is required.")
-                 return
-
-            # Validate Remote Port
-            try:
-                remote_port = int(remote_port_str)
-                if not (1 <= remote_port <= 65535): # Common port range
-                    raise ValueError("Port out of valid range 1-65535")
-            except ValueError:
-                ErrorDialog(self, message="Invalid Remote Port: Must be a number between 1 and 65535.")
-                return
-
-            # Validate Local Destination format (host:port)
-            parts = local_destination.split(':')
-            if len(parts) != 2:
-                ErrorDialog(self, message="Local Destination must be in the format host:port (e.g., localhost:3000 or 192.168.1.5:80).")
-                return
-            local_host, local_port_str = parts[0].strip(), parts[1].strip()
-            if not local_host:
-                 ErrorDialog(self, message="Local Destination host part cannot be empty.")
-                 return
-            try:
-                local_port = int(local_port_str)
-                if not (1 <= local_port <= 65535):
-                     raise ValueError("Local port out of valid range 1-65535")
-            except ValueError:
-                 ErrorDialog(self, message="Invalid Local Destination Port: Must be a number between 1 and 65535.")
-                 return
-
-            # Update result dictionary
-            self.result = self.initial_data.copy()
-            self.result.update({
-                "type": "tunnel",
-                "server_id": server_id,
-                "assigned_client_id": client_id,
-                "hostname": hostname,
-                "remote_port": remote_port,
-                "local_destination": f"{local_host}:{local_port}", # Use cleaned parts
-                "enabled": self.enabled_var.get()
-            })
-            super()._on_ok() # Close dialog if validation passes
-        except Exception as e:
-            logging.error(f"Unexpected error in Tunnel Dialog _on_ok: {e}", exc_info=True)
-            ErrorDialog(self, message=f"An unexpected error occurred: {e}")
-
+        # Merge new data with initial data (preserves ID, etc.)
+        self.result = self.initial_data.copy()
+        self.result.update({
+            "hostname": hostname,
+            "server_id": server_id,
+            "remote_port": remote_port,
+            "client_device_id": client_device_id,
+            "local_destination": local_dest,
+            "auto_start_on_device_ids": auto_start_list
+        })
+        
+        self.grab_release()
+        self.destroy()
 
 class InviteDialog(BaseDialog):
-    """Dialog to display QR code and invite string for adding a new device."""
-    def __init__(self, parent, invite_string: str):
-        super().__init__(parent, title="Add a New Device")
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
-
-        ctk.CTkLabel(content_frame, text="On the new device, go to Settings > Devices > Invite Another Device,\nthen scan this QR code or paste the ID below:",
-                     wraplength=400, justify="left").pack(pady=(0, 15))
-
-        # Generate and display QR code
+    """Displays a Syncthing invite QR code and text."""
+    def __init__(self, parent, invite_string: str, title="Invite Device"):
+        super().__init__(parent, title=title)
+        
+        self.invite_string = invite_string
+        
+        ctk.CTkLabel(self.main_frame, text="Scan this QR code or copy the string to sync another device:").pack(pady=(0, 10))
+        
+        # --- Generate QR Code ---
         try:
-            qr_img_pil = qrcode.make(invite_string).resize((250, 250))
-            self.qr_photo = ctk.CTkImage(light_image=qr_img_pil, dark_image=qr_img_pil, size=(250, 250))
-            qr_label = ctk.CTkLabel(content_frame, image=self.qr_photo, text="")
+            qr = qrcode.QRCode(version=1, box_size=10, border=4)
+            qr.add_data(self.invite_string)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convert PIL image to CTkImage
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            qr_image = ctk.CTkImage(Image.open(img_byte_arr), size=(250, 250))
+            
+            qr_label = ctk.CTkLabel(self.main_frame, image=qr_image, text="")
             qr_label.pack(pady=10)
+            
         except Exception as e:
             logging.error(f"Failed to generate QR code: {e}")
-            ctk.CTkLabel(content_frame, text="Error generating QR code.", text_color="red").pack(pady=10)
+            ctk.CTkLabel(self.main_frame, text="Failed to generate QR code.").pack(pady=10)
+        
+        # --- Invite String Entry ---
+        entry_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        entry_frame.pack(fill="x", padx=10, pady=10)
+        entry_frame.grid_columnconfigure(0, weight=1)
+        
+        self.invite_entry = ctk.CTkEntry(entry_frame, width=300)
+        self.invite_entry.insert(0, self.invite_string)
+        self.invite_entry.configure(state="readonly")
+        self.invite_entry.grid(row=0, column=0, sticky="ew")
+        
+        copy_button = ctk.CTkButton(entry_frame, text="Copy", width=60, command=self._copy_invite)
+        copy_button.grid(row=0, column=1, padx=(5, 0))
+        self.copy_button = copy_button # Save ref
+        
+        # --- Close Button ---
+        ok_button = ctk.CTkButton(self.main_frame, text="Close", command=self._on_ok)
+        ok_button.pack(pady=10)
+        ok_button.focus_set()
 
-        # Display invite string in a read-only entry
-        ctk.CTkLabel(content_frame, text="Device ID:").pack(anchor="w", padx=10, pady=(10, 0))
-        invite_entry = ctk.CTkEntry(content_frame, width=400)
-        invite_entry.insert(0, invite_string)
-        invite_entry.configure(state="readonly")
-        invite_entry.pack(padx=10, pady=(0, 15))
-
-        ctk.CTkButton(content_frame, text="Close", command=self._on_cancel, width=100).pack(pady=10)
-
+    def _copy_invite(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.invite_string)
+            self.copy_button.configure(text="Copied!")
+            self.after(2000, lambda: self.copy_button.configure(text="Copy"))
+        except Exception as e:
+            logging.error(f"Failed to copy invite string to clipboard: {e}")
+            self.copy_button.configure(text="Failed")
 
 class ConfirmationDialog(BaseDialog):
-    """Simple Yes/No confirmation dialog."""
-    def __init__(self, parent, title="Confirm", message="Are you sure?"):
+    """A modal dialog to ask for Yes/No confirmation."""
+    def __init__(self, parent, title="Confirm?", message="Are you sure?"):
         super().__init__(parent, title=title)
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
-
-        ctk.CTkLabel(content_frame, text=message, wraplength=300, justify="center").pack(pady=(0, 20))
-
-        button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        
+        ctk.CTkLabel(self.main_frame, text=message, wraplength=350, justify="left").pack(pady=(0, 20), fill="x")
+        
+        button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         button_frame.pack(pady=10)
-        ctk.CTkButton(button_frame, text="Yes", command=self._on_ok, width=80).pack(side="left", padx=10)
-        ctk.CTkButton(button_frame, text="No", command=self._on_cancel, width=80).pack(side="left", padx=10)
-
-        self.resizable(False, False)
-
-    def _on_ok(self, event=None):
-        self.result = True
-        super()._on_ok()
-
+        
+        self.yes_button = ctk.CTkButton(button_frame, text="Yes", command=self._on_ok, width=100)
+        self.yes_button.pack(side="left", padx=10)
+        
+        self.no_button = ctk.CTkButton(button_frame, text="No", command=self._on_cancel, width=100,
+                                       fg_color="transparent", border_width=1)
+        self.no_button.pack(side="left", padx=10)
+        
+        self.bind("<Return>", self._on_ok)
+        self.bind("<Escape>", self._on_cancel)
+        
+        self.yes_button.focus_set()
 
 class RecoveryKeyDialog(BaseDialog):
-    """Dialog to display or input the recovery key."""
-    def __init__(self, parent, recovery_key: str = None, input_mode: bool = False, title=None):
-        self.input_mode = input_mode
-        title = title or ("Enter Recovery Key" if input_mode else "Save Your Recovery Key!")
+    """Displays the recovery key and a copy button."""
+    def __init__(self, parent, recovery_key: str, title="Recovery Key"):
         super().__init__(parent, title=title)
+        
+        ctk.CTkLabel(self.main_frame, text="Save this key somewhere safe!\nIt's the only way to recover your account.",
+                       wraplength=400, justify="center").pack(pady=(0, 10))
+                       
+        key_frame = ctk.CTkFrame(self.main_frame, fg_color=("gray90", "gray20"))
+        key_frame.pack(fill="x", padx=10, pady=10)
+        
+        self.key_label = ctk.CTkLabel(key_frame, text=recovery_key, font=("Courier New", 14), wraplength=380, justify="center")
+        self.key_label.pack(padx=15, pady=15)
+        
+        self.copy_button = ctk.CTkButton(self.main_frame, text="Copy to Clipboard", command=self._copy_key)
+        self.copy_button.pack(pady=10)
+        
+        self.ok_button = ctk.CTkButton(self.main_frame, text="OK", command=self._on_ok,
+                                        fg_color="transparent", border_width=1)
+        self.ok_button.pack(pady=(0, 10))
+        
+        self.ok_button.focus_set()
 
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
-
-        if input_mode:
-            # UI for entering the key
-            ctk.CTkLabel(content_frame, text="Enter your recovery key to reset your password:",
-                         wraplength=350, justify="left").pack(pady=(0, 10))
-            self.key_entry = ctk.CTkEntry(content_frame, width=350, font=("Courier New", 14))
-            self.key_entry.pack(pady=10)
-            self.after(100, self.key_entry.focus_set) # Focus entry
-            self.key_entry.bind("<Return>", self._on_ok)
-
-            button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-            button_frame.pack(pady=20)
-            ctk.CTkButton(button_frame, text="Reset Password", command=self._on_ok).pack(side="left", padx=10)
-            ctk.CTkButton(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=10)
-        else:
-            # UI for displaying the key
-            ctk.CTkLabel(content_frame, text="IMPORTANT:\nSave this recovery key in a secure place (e.g., password manager)!\nIt's the *only* way to reset your password if forgotten.",
-                         wraplength=350, justify="left", text_color=("red", "orange")).pack(pady=(0, 10)) # Emphasize importance
-
-            key_entry = ctk.CTkEntry(content_frame, width=350, font=("Courier New", 14))
-            key_entry.insert(0, recovery_key if recovery_key else "ERROR: Key not provided!")
-            key_entry.configure(state="readonly")
-            key_entry.pack(pady=10)
-
-            self.confirm_check_var = ctk.StringVar(value="off")
-            confirm_check = ctk.CTkCheckBox(content_frame, text="I have securely saved this recovery key.",
-                                            variable=self.confirm_check_var, onvalue="on", offvalue="off",
-                                            command=self._check_state) # Command calls check_state
-            confirm_check.pack(pady=10)
-
-            self.ok_button = ctk.CTkButton(content_frame, text="Continue", command=self._on_ok, state="disabled")
-            self.ok_button.pack(pady=15)
-            # self.confirm_check_var.trace_add("write", self._check_state) # Using command is simpler
-
-        self.resizable(False, False)
-
-    def _check_state(self, *args):
-        """Enables/disables the Continue button based on the checkbox state (display mode only)."""
-        if not self.input_mode and hasattr(self, 'ok_button'):
-            is_checked = self.confirm_check_var.get() == "on"
-            self.ok_button.configure(state="normal" if is_checked else "disabled")
-
-    def _on_ok(self, event=None):
-        if self.input_mode:
-            # Return the entered key, stripped of whitespace
-            self.result = self.key_entry.get().strip() if hasattr(self, 'key_entry') else None
-            if not self.result:
-                 ErrorDialog(self, "Recovery key cannot be empty.")
-                 return # Keep dialog open
-        else: # Display mode
-             if self.confirm_check_var.get() == "on":
-                 self.result = True # Confirmed saving
-             else:
-                 ErrorDialog(self, "Please confirm you have securely saved the recovery key before continuing.")
-                 return # Keep dialog open
-
-        super()._on_ok() # Close dialog if checks pass
-
+    def _copy_key(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.key_label.cget("text"))
+            self.copy_button.configure(text="Copied!")
+            self.after(2000, lambda: self.copy_button.configure(text="Copy to Clipboard"))
+        except Exception as e:
+            logging.error(f"Failed to copy recovery key to clipboard: {e}")
+            self.copy_button.configure(text="Copy Failed")
 
 class ErrorDialog(BaseDialog):
-    """Simple dialog to display an error message."""
-    def __init__(self, parent, message: str, title: str = "Error"):
+    """A simple modal dialog to show an error message."""
+    def __init__(self, parent, title="Error", message="An error occurred."):
         super().__init__(parent, title=title)
-        content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        content_frame.pack(padx=20, pady=20, fill="both", expand=True)
-
-        # Optional: Add error icon (using text emoji)
-        ctk.CTkLabel(content_frame, text="⚠️", font=ctk.CTkFont(size=24)).pack(pady=(0, 10))
-
-        # Display the error message
-        ctk.CTkLabel(content_frame, text=message, wraplength=300, justify="center").pack(pady=(0, 20))
-
-        # OK button
-        ok_button = ctk.CTkButton(content_frame, text="OK", command=self._on_ok, width=100)
+        
+        ctk.CTkLabel(self.main_frame, text=message, wraplength=350, justify="left").pack(pady=(0, 20), fill="x")
+        
+        ok_button = ctk.CTkButton(self.main_frame, text="OK", command=self._on_ok, width=100)
         ok_button.pack(pady=10)
-
-        # Focus the OK button after the dialog appears
-        self.after(50, ok_button.focus_set)
-        self.resizable(False, False)
-
-
-class LogViewerDialog(BaseDialog):
-    """Dialog to display multiline text content, like logs."""
-    def __init__(self, parent, log_content: str, title: str = "Log Viewer"):
-        super().__init__(parent, title=title)
-        self.geometry("800x600") # Start with a reasonable size
-        self.minsize(400, 300) # Allow resizing down to a minimum
-
-        # Textbox fills the entire dialog
-        textbox = ctk.CTkTextbox(self, wrap="none", font=("Courier New", 11)) # No wrapping, monospaced font
-        textbox.pack(expand=True, fill="both", padx=10, pady=(10, 5))
-        try:
-            textbox.insert("1.0", log_content if log_content else "Log is empty.")
-        except Exception as e:
-            logging.error(f"Error inserting log content: {e}")
-            textbox.insert("1.0", f"Error displaying log content:\n{e}")
-
-        textbox.configure(state="disabled") # Make read-only
-
-        # Close button at the bottom
-        ctk.CTkButton(self, text="Close", command=self._on_cancel, width=100).pack(pady=10)
+        
+        self.bind("<Return>", self._on_ok)
+        self.bind("<Escape>", self._on_ok)
+        
+        ok_button.focus_set()

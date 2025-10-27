@@ -24,7 +24,7 @@ class DebugView(ctk.CTkFrame):
         self.json_display.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew") # Added horizontal padding
         self.json_display.configure(state="disabled") # Start read-only
 
-    def enter(self):
+    def on_enter(self):
         """Called when the view is shown. Populates the object list."""
         logging.info("Entering Debug View.")
         # Clear previous widgets in the list frame

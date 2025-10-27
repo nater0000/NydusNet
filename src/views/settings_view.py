@@ -27,7 +27,7 @@ class SettingsView(ctk.CTkFrame):
         self._create_password_tab()
         self._create_appearance_tab()
 
-    def enter(self):
+    def on_enter(self):
         """Called every time the view is shown to refresh all dynamic data."""
         logging.debug("Entering SettingsView, reloading data.")
         # Load data for the visible tabs
@@ -166,8 +166,8 @@ class SettingsView(ctk.CTkFrame):
         pass_frame.pack(fill="x", padx=10, pady=10)
 
         ctk.CTkLabel(pass_frame, text="Master Password Management", font=ctk.CTkFont(weight="bold")).pack(pady=10)
-        ctk.CTkButton(pass_frame, text="Change Master Password...", command=self.controller.change_master_password).pack(pady=5, fill="x", padx=20)
-        ctk.CTkButton(pass_frame, text="View Recovery Key...", command=self.controller.view_recovery_key).pack(pady=5, fill="x", padx=20)
+        ctk.CTkButton(pass_frame, text="Change Master Password...", command=self.controller.change_master_password).pack(pady=5, anchor="center", padx=20)
+        ctk.CTkButton(pass_frame, text="View Recovery Key...", command=self.controller.view_recovery_key).pack(pady=5, anchor="center", padx=20)
 
     # --- Appearance Tab ---
     def _create_appearance_tab(self):

@@ -1,846 +1,968 @@
+# Full app.py
+
 import customtkinter as ctk
+import os
 import logging
 import threading
-import os
-import socket
+import sys
+import pystray # For tray icon
 from PIL import Image
-import pystray
-from tkinter import filedialog
-import time
-import sys # Added for sys._MEIPASS
+import re # Added for password validation in handle_first_run
 
-# --- Import views ---
+# --- Controllers ---
+from controllers.config_manager import ConfigManager
+from controllers.syncthing_manager import SyncthingManager
+from controllers.tunnel_manager import TunnelManager
+from utils.crypto import CryptoManager
+from controllers.server_provisioner import ServerProvisioner
+
+# --- Views ---
 from views.dashboard_view import DashboardView
 from views.servers_view import ServersView
 from views.settings_view import SettingsView
 from views.history_view import HistoryView
 from views.debug_view import DebugView
-# --- Import dialogs ---
+# --- CORRECTED TOOLTIP IMPORT ---
+from views.dialogs import ToolTip 
+
+# --- Dialogs ---
 from views.dialogs import (
-    UnlockDialog, ServerDialog, TunnelDialog, InviteDialog,
-    ConfirmationDialog, RecoveryKeyDialog, ErrorDialog, LoadingDialog, LogViewerDialog,
-    ProvisionDialog, ProvisioningLogDialog
+    BaseDialog, ErrorDialog, RecoveryKeyDialog, 
+    ProvisionDialog, InviteDialog, ConfirmationDialog, 
+    LogViewerDialog, ServerDialog, TunnelDialog, ProvisioningLogDialog
 )
-# --- Import controllers and utils ---
-from controllers.config_manager import ConfigManager
-from controllers.tunnel_manager import TunnelManager
-from controllers.syncthing_manager import SyncthingManager
-from controllers.server_provisioner import ServerProvisioner
-from utils.crypto import CryptoManager
 
 class App(ctk.CTk):
+
     def __init__(self, *args, **kwargs):
+        """Initializes the main application window and core components."""
         super().__init__(*args, **kwargs)
-
         self.title("NydusNet")
-        # --- SET ICON BITMAP ---
-        try:
-            # --- Corrected Path Logic for Icon ---
-            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-                # Running packaged
-                base_path = sys._MEIPASS
-            else:
-                # Running script
-                src_dir = os.path.dirname(os.path.abspath(__file__))
-                base_path = os.path.dirname(src_dir) # Project root
 
-            icon_path = os.path.join(base_path, "resources", "images", "nydusnet.ico")
-            if os.path.exists(icon_path):
-                 self.iconbitmap(icon_path)
-                 logging.info(f"Application icon set from: {icon_path}")
-            else:
-                 logging.warning(f"Application icon not found at {icon_path}")
-        except Exception as e:
-            logging.warning(f"Failed to set application icon: {e}")
-        # --- END ICON BITMAP ---
+        # --- Icon Setup ---
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            base_dir = sys._MEIPASS
+        icon_path = os.path.join(base_dir, "resources", "images", "nydusnet.ico")
+        self.tray_icon_path = icon_path
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+                logging.info(f"App icon set from: {icon_path}")
+            except Exception as e:
+                logging.warning(f"Failed to set app icon using iconbitmap: {e}")
+        else:
+            logging.warning(f"App icon file not found at: {icon_path}")
+        # --- End Icon Setup ---
 
-        self.geometry("900x550")
-        self.resizable(True, True)
-        self.minsize(700, 500)
+        # --- Define Sizes ---
+        self._initial_size = "400x400" 
+        self._main_size = "900x550"
+        self._main_minsize = (700, 500)
+        
+        # --- NEW: Sidebar Sizes ---
+        self.sidebar_width_expanded = 160
+        self.sidebar_width_collapsed = 60 # Icon-only width
 
+        # --- Set Initial Geometry & State ---
+        self.geometry(self._initial_size)
+        self.resizable(False, False)
+        self.minsize(0, 0)
+
+        self.attributes("-topmost", True)
+        logging.debug("Window set to always-on-top initially.")
+
+        # --- Window Behavior Setup ---
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.bind("<Unmap>", self._on_minimize) # Handle minimize
         self.minimized_to_tray = False
 
+        # --- Initialize flags and events ---
         self.is_unlocked = False
         self.is_shutting_down = False
         self.syncthing_id_ready = threading.Event()
+        self.sidebar_is_collapsed = False # State for new sidebar
 
-        self.images = self._load_images() # Load images early
+        # --- Load Assets ---
+        self.images = self._load_images()
 
+        # --- Initialize managers ---
         self.config_manager = ConfigManager(self)
         self.syncthing_manager = SyncthingManager(self)
         self.tunnel_manager = TunnelManager(self)
         self.crypto_manager = CryptoManager()
 
+        # --- Initialize the single tooltip instance ---
+        # Added a longer delay so tooltips don't pop up in expanded view
+        self.tooltip = ToolTip(self, show_delay_ms=700) 
+
+        # --- Setup Blank/Initial UI Directly in App ---
         self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1) # Content area expands
+        self.grid_columnconfigure(0, weight=1)
 
-        self.sidebar_frame = self._create_sidebar()
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        # --- Initialize UI component references ---
+        self.sidebar_frame = None
+        self.content_frame = None
+        self.toggle_button = None # New toggle button (in sidebar)
+        self.nav_buttons = [] # Cache for nav buttons
+        # --- REMOVED: self.sidebar_toggle_button = None ---
+        
+        self.frames = {}
+        self._initial_frame = None
+        self.password_entry = None # For unlock screen
+        self.setup_entry1 = None   # For setup screen
+        self.setup_entry2 = None   # For setup screen
+        self._focus_after_id = None
+        self._loading_frame = None
 
+        # Build the initial UI
+        self._build_initial_ui()
+
+        # --- Center Initial Window ---
+        self.update_idletasks()
+        self._center_window()
+
+        # --- Setup System Tray Icon ---
+        self.tray_icon = None
+        self._setup_tray_icon()
+
+        # --- Trigger initial state check ---
+        self.after(50, self._initial_check)
+
+    # --- Methods ---
+    
+    def _load_images(self) -> dict:
+        logging.debug("Loading images...")
+        images = {}
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            base_path = sys._MEIPASS
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            base_path = os.path.join(base_dir, "..")
+        image_dir = os.path.join(base_path, "resources", "images")
+        
+        # --- Ensure "setup" key is here ---
+        image_files = {
+            "logo": "nydusnet-logo-light.png", "logo_dark": "nydusnet-logo-dark.png",
+            "menu": "menu.png", # For toggle button
+            "dashboard": "dashboard.png", # Icon for Tunnels button
+            "servers": "servers.png", # Icon for Servers button
+            "settings": "settings.png", # Icon for Settings button
+            "history": "history.png", # Icon for History button
+            "debug": "debug.png", # Icon for Debug button
+            "status-on": "status-on.png", "status-off": "status-off.png",
+            "status-error": "status-error.png", "status-disabled": "status-disabled.png",
+            "copy": "copy.png", "eye-show": "eye-show.png", "eye-hide": "eye-hide.png",
+            "delete": "delete.png", "edit": "edit.png", "connect": "connect.png",
+            "add": "add.png", "key": "key.png", "folder": "folder.png", "sync": "sync.png",
+            "setup": "setup.png", # Added
+            "start": "start.png", 
+            "stop": "stop.png",
+            "logs": "logs.png",
+        }
+        
+        for name, filename in image_files.items():
+            path = os.path.join(image_dir, filename)
+            if os.path.exists(path):
+                try:
+                    img = Image.open(path)
+                    if name.endswith("_dark"): continue
+                    if name == "logo":
+                         dark_path = os.path.join(image_dir, image_files["logo_dark"])
+                         dark_img = Image.open(dark_path) if os.path.exists(dark_path) else img
+                         images[name] = ctk.CTkImage(light_image=img, dark_image=dark_img, size=img.size)
+                    else:
+                         images[name] = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+                except Exception as e:
+                    logging.warning(f"Failed to load image '{filename}': {e}")
+            elif not name.endswith("_dark"):
+                logging.warning(f"Image file not found: {path}")
+        logging.debug(f"Loaded {len(images)} images.")
+        return images
+
+    def _create_sidebar(self, width: int):
+        """Creates and populates the sidebar frame."""
+        # --- Use passed-in width ---
+        sidebar = ctk.CTkFrame(self, width=width, corner_radius=0) 
+        sidebar.pack_propagate(False)
+        sidebar.grid_propagate(False)
+        
+        # --- REMOVED Logo ---
+
+        # --- NEW Toggle Button (at the top) ---
+        menu_image = self.images.get("menu")
+        self.toggle_button = ctk.CTkButton(
+            sidebar,
+            text="Collapse",
+            image=menu_image,
+            anchor="w",
+            corner_radius=5,
+            fg_color="transparent",
+            hover_color=("gray75", "gray25"),
+            command=self._toggle_sidebar
+        )
+        self.toggle_button.pack(fill="x", padx=10, pady=10)
+
+        # Navigation buttons
+        nav_buttons = [
+            ("DashboardView", "Tunnels", self.images.get("dashboard")),
+            ("ServersView", "Servers", self.images.get("servers")),
+            ("SettingsView", "Settings", self.images.get("settings")),
+            ("HistoryView", "History", self.images.get("history")),
+            ("DebugView", "Debug", self.images.get("debug"))
+        ]
+
+        # --- Clear nav_buttons cache and rebuild ---
+        self.nav_buttons = [] 
+        for view_name, text, img in nav_buttons:
+            btn = ctk.CTkButton(
+                sidebar, text=text, image=img,
+                anchor="w", corner_radius=5,
+                fg_color="transparent", hover_color=("gray75", "gray25"),
+                command=lambda v=view_name: self.show_frame(v)
+            )
+            btn.pack(fill="x", padx=10, pady=5)
+            
+            # --- Store original text for re-expansion ---
+            btn.button_text = text 
+            
+            # --- Add tooltip for collapsed mode ---
+            if self.tooltip:
+                btn.bind("<Enter>", lambda e, text=text: self.tooltip.schedule_show(e, text))
+                btn.bind("<Leave>", self.tooltip.schedule_hide)
+            
+            # --- Store button in cache ---
+            self.nav_buttons.append(btn)
+
+        return sidebar
+
+    # --- *** REWRITTEN METHOD *** ---
+    def _toggle_sidebar(self):
+        """Shows or hides the sidebar text and resizes the frame."""
+        if not self.sidebar_frame: return
+        
+        if self.sidebar_is_collapsed:
+            # --- EXPAND ---
+            logging.debug("Expanding sidebar...")
+            self.sidebar_frame.configure(width=self.sidebar_width_expanded)
+            
+            # Configure toggle button
+            self.toggle_button.configure(text="Collapse", anchor="w")
+            
+            # Configure nav buttons
+            for btn in self.nav_buttons:
+                btn.configure(text=btn.button_text, anchor="w")
+                
+            self.sidebar_is_collapsed = False
+        else:
+            # --- COLLAPSE ---
+            logging.debug("Collapsing sidebar...")
+            self.sidebar_frame.configure(width=self.sidebar_width_collapsed)
+            
+            # Configure toggle button (hide text, center icon)
+            self.toggle_button.configure(text="", anchor="center")
+            
+            # Configure nav buttons (hide text, center icons)
+            for btn in self.nav_buttons:
+                btn.configure(text="", anchor="center")
+
+            self.sidebar_is_collapsed = True
+
+    def _build_main_ui(self):
+        """Creates the main sidebar, content frame, and view frames AFTER unlock."""
+        logging.debug("Building main UI components...")
+
+        if hasattr(self, '_initial_frame') and self._initial_frame and self._initial_frame.winfo_exists():
+             self._initial_frame.destroy(); self._initial_frame = None
+        if hasattr(self, '_loading_frame') and self._loading_frame and self._loading_frame.winfo_exists():
+             self._loading_frame.destroy(); self._loading_frame = None
+
+        self.grid_columnconfigure(0, weight=0) # Sidebar column (fixed width)
+        self.grid_columnconfigure(1, weight=1) # Content column (expands)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Create and grid sidebar (use initial expanded width)
+        self.sidebar_frame = self._create_sidebar(width=self.sidebar_width_expanded)
+        if self.sidebar_frame: 
+            self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        else: 
+            logging.error("Failed to create sidebar frame!")
+
+        # Create and grid content frame
         self.content_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.content_frame.grid(row=0, column=1, sticky="nsew")
-        self.content_frame.grid_rowconfigure(0, weight=1)
-        self.content_frame.grid_columnconfigure(0, weight=1)
+        self.content_frame.grid_rowconfigure(0, weight=1); self.content_frame.grid_columnconfigure(0, weight=1)
 
-        # --- Sidebar Toggle Button ---
-        self.sidebar_toggle_button = ctk.CTkButton(self.content_frame, text="", # No text
-                                                   image=self.images.get("menu"), # Use loaded icon
-                                                   width=30, height=30,
-                                                   corner_radius=5, fg_color="transparent",
-                                                   hover_color=("gray70", "gray30"),
-                                                   command=self._toggle_sidebar)
-        # Initial position set by _update_toggle_button_position
+        # --- REMOVED old toggle button creation and .place() ---
 
+        # Create view frames inside content frame
         self.frames = {}
-        for F in (DashboardView, ServersView, SettingsView, HistoryView, DebugView):
-            page_name = F.__name__
-            frame = F(parent=self.content_frame, controller=self)
-            self.frames[page_name] = frame
-            frame.grid(row=0, column=0, padx=0, pady=0, sticky="nsew")
+        logging.debug("Creating view frames...")
+        for ViewClass in (DashboardView, ServersView, SettingsView, HistoryView, DebugView):
+            page_name = ViewClass.__name__
+            try:
+                frame = ViewClass(parent=self.content_frame, controller=self)
+                self.frames[page_name] = frame
+                frame.grid(row=0, column=0, padx=0, pady=0, sticky="nsew")
+                frame.grid_remove()
+                logging.debug(f"Created frame: {page_name}")
+            except Exception as e:
+                logging.error(f"Failed to create view frame {page_name}: {e}", exc_info=True)
 
-        self._update_toggle_button_position() # Set initial toggle button position
-
-        self.withdraw() # Start hidden
-        self.after(100, self.show_unlock_dialog)
-        self.tray_icon = None
-
-    def _load_images(self) -> dict:
-        """Loads all images used by the app into a dictionary."""
-        image_dict = {}
-        try:
-            # --- CORRECTED PATH LOGIC FOR PACKAGED APP ---
-            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-                base_path = sys._MEIPASS
-                logging.info(f"Running packaged. Resource base path (_MEIPASS): {base_path}")
-            else:
-                src_dir = os.path.dirname(os.path.abspath(__file__))
-                base_path = os.path.dirname(src_dir) # Project root
-                logging.info(f"Running script. Resource base path (project root): {base_path}")
-
-            image_dir = os.path.join(base_path, "resources", "images")
-            logging.info(f"Attempting to load images from: {image_dir}")
-            # --- END CORRECTION ---
-
-            def load_img(key, filename, size=(20, 20)):
-                try:
-                    path = os.path.join(image_dir, filename)
-                    if not os.path.exists(path):
-                        raise FileNotFoundError(f"Image file not found: {path}")
-                    image_dict[key] = ctk.CTkImage(Image.open(path), size=size)
-                    logging.debug(f"Loaded image '{key}' from {filename}")
-                except Exception as e:
-                    logging.warning(f"Failed to load image '{key}' from {filename}. Error: {e}")
-                    image_dict[key] = ctk.CTkImage(Image.new('RGB', size, color='red'), size=size) # Placeholder
-
-            load_img("logo", "nydusnet_logo.png", (26, 26))
-            load_img("dashboard", "dashboard.png")
-            load_img("settings", "settings.png")
-            load_img("history", "history.png")
-            load_img("debug", "debug.png")
-            load_img("start", "start.png")
-            load_img("stop", "stop.png")
-            load_img("edit", "edit.png")
-            load_img("logs", "logs.png")
-            load_img("delete", "delete.png")
-            load_img("add", "add.png")
-            load_img("start_all", "start_all.png")
-            load_img("stop_all", "stop_all.png")
-            load_img("add_device", "add_device.png")
-            load_img("setup", "setup.png")
-            load_img("eye-show", "eye-show.png")
-            load_img("eye-hide", "eye-hide.png")
-            load_img("bg_gradient", "bg_gradient.jpg", (400, 300))
-            load_img("menu", "menu.png", (20, 20)) # Added for sidebar toggle
-            # load_img("panel-left-close", "panel-left-close.png", (20, 20)) # Optional alternate icon
-
-        except Exception as e:
-            logging.error(f"Critical error during image loading setup: {e}", exc_info=True)
-        return image_dict
-
-
-    def _toggle_sidebar(self):
-        """Shows or hides the sidebar frame and adjusts the toggle button position."""
-        menu_icon = self.images.get("menu") # Get the icon
-
-        if self.sidebar_frame.winfo_ismapped():
-            self.sidebar_frame.grid_forget()
-            logging.debug("Sidebar hidden.")
-        else:
-            self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-            logging.debug("Sidebar shown.")
-
-        # Ensure the icon is set (in case it failed loading initially)
-        if menu_icon:
-            self.sidebar_toggle_button.configure(image=menu_icon)
-
-        self.after(20, self._update_toggle_button_position)
-
-
-    def _update_toggle_button_position(self):
-        """Places the sidebar toggle button correctly based on sidebar visibility."""
-        if not hasattr(self, 'sidebar_toggle_button') or not self.sidebar_toggle_button.winfo_exists():
-            return
-
-        if self.sidebar_frame.winfo_ismapped():
-             sidebar_width = self.sidebar_frame.winfo_width()
-             target_x = sidebar_width + 10 if sidebar_width > 0 else 160 + 10 # Fallback
-             self.sidebar_toggle_button.place(x=target_x, y=10)
-        else:
-            self.sidebar_toggle_button.place(x=10, y=10)
-
-
-    def _create_sidebar(self) -> ctk.CTkFrame:
-        """Creates and configures the sidebar navigation frame."""
-        frame = ctk.CTkFrame(self, width=160, corner_radius=0)
-        frame.grid_propagate(False)
-        frame.grid_rowconfigure(6, weight=1) # Push empty space below buttons
-
-        logo_label = ctk.CTkLabel(frame, text=" NydusNet", image=self.images.get("logo"),
-                                     compound="left", font=ctk.CTkFont(size=16, weight="bold"))
-        logo_label.grid(row=0, column=0, padx=15, pady=20, sticky="ew")
-
-        self.dashboard_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10,
-                                                text="Tunnels", fg_color="transparent",
-                                                text_color=("gray10", "gray90"),
-                                                hover_color=("gray70", "gray30"),
-                                                image=self.images.get("dashboard"), anchor="w",
-                                                command=lambda: self.show_frame("DashboardView"))
-        self.dashboard_button.grid(row=1, column=0, sticky="ew")
-
-        self.servers_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10,
-                                               text="Servers", fg_color="transparent",
-                                               text_color=("gray10", "gray90"),
-                                               hover_color=("gray70", "gray30"),
-                                               image=self.images.get("setup"), anchor="w",
-                                               command=lambda: self.show_frame("ServersView"))
-        self.servers_button.grid(row=2, column=0, sticky="ew")
-
-        self.settings_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10,
-                                               text="Settings", fg_color="transparent",
-                                               text_color=("gray10", "gray90"),
-                                               hover_color=("gray70", "gray30"),
-                                               image=self.images.get("settings"), anchor="w",
-                                               command=lambda: self.show_frame("SettingsView"))
-        self.settings_button.grid(row=3, column=0, sticky="ew")
-
-        self.history_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10,
-                                              text="History", fg_color="transparent",
-                                              text_color=("gray10", "gray90"),
-                                              hover_color=("gray70", "gray30"),
-                                              image=self.images.get("history"), anchor="w",
-                                              command=lambda: self.show_frame("HistoryView"))
-        self.history_button.grid(row=4, column=0, sticky="ew")
-
-        self.debug_button = ctk.CTkButton(frame, corner_radius=0, height=40, border_spacing=10,
-                                            text="Debug", fg_color="transparent",
-                                            text_color=("gray10", "gray90"),
-                                            hover_color=("gray70", "gray30"),
-                                            image=self.images.get("debug"), anchor="w",
-                                            command=lambda: self.show_frame("DebugView"))
-        self.debug_button.grid(row=5, column=0, sticky="ew")
-
-        return frame
+        logging.debug("Main UI build complete.")
 
     def on_syncthing_id_ready(self):
         """Callback from SyncthingManager when the device ID is available."""
-        logging.info("Syncthing ID is ready. Refreshing relevant views.")
         self.syncthing_id_ready.set()
-        if "SettingsView" in self.frames and self.frames["SettingsView"].winfo_viewable():
-            self.after(0, self.frames["SettingsView"].enter)
-        self.after(0, self.refresh_dashboard)
-
+        logging.info("Syncthing ID is ready. Refreshing relevant views.")
+        self.after(0, self.refresh_dashboard) 
+        
+        if "SettingsView" in self.frames and self.frames["SettingsView"].winfo_exists():
+             if hasattr(self.frames["SettingsView"], 'on_syncthing_id_ready'):
+                 self.after(0, self.frames["SettingsView"].on_syncthing_id_ready)
+             elif hasattr(self.frames["SettingsView"], '_load_devices_data'): 
+                  self.after(0, self.frames["SettingsView"]._load_devices_data)
 
     def _setup_tray_icon(self):
+        """Initializes and starts the system tray icon thread."""
         try:
-            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-                base_path = sys._MEIPASS
-            else:
-                src_dir = os.path.dirname(os.path.abspath(__file__))
-                base_path = os.path.dirname(src_dir)
-
-            icon_path = os.path.join(base_path, "resources", "images", "nydusnet.ico")
-            if not os.path.exists(icon_path):
-                raise FileNotFoundError(f"Tray icon not found: {icon_path}")
-            icon_image = Image.open(icon_path)
-            logging.info(f"Tray icon loaded from: {icon_path}")
+            if not os.path.exists(self.tray_icon_path):
+                 logging.error(f"Cannot create tray icon: File not found at {self.tray_icon_path}")
+                 return
+                 
+            image = Image.open(self.tray_icon_path)
+            logging.info(f"Tray icon loaded from: {self.tray_icon_path}")
+            
+            menu = (
+                pystray.MenuItem('Show NydusNet', self.show_window, default=True),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem('Quit NydusNet', self.quit_application)
+            )
+            self.tray_icon = pystray.Icon("nydusnet", image, "NydusNet", menu)
+            
+            threading.Thread(target=self._run_tray_icon, daemon=True).start()
+            logging.info("System tray icon thread started.")
+            
         except Exception as e:
-            logging.warning(f"System tray icon error ({e}), using a placeholder.")
-            icon_image = Image.new('RGB', (64, 64), color='blue')
+            logging.error(f"Failed to create system tray icon: {e}", exc_info=True)
 
-        menu = (
-            pystray.MenuItem('Show', self.show_window, default=True),
-            pystray.MenuItem('Quit', self.quit_application)
-        )
-        self.tray_icon = pystray.Icon("NydusNet", icon_image, "NydusNet", menu)
-        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+    def _run_tray_icon(self):
+        """Target function for the pystray thread."""
+        try:
+            if self.tray_icon: self.tray_icon.run()
+        except Exception as e:
+             logging.error(f"Error in tray icon thread: {e}", exc_info=True)
 
     def show_window(self):
-        """Shows the main window and resets the minimized flag."""
-        self.minimized_to_tray = False
+        """Brings the main window to the front."""
         try:
-            if not self.winfo_exists(): return
-            self.deiconify()
-            self.lift()
-            self.focus_force()
-            self.attributes('-topmost', True)
-            self.after(100, lambda: self.attributes('-topmost', False) if self.winfo_exists() else None)
-            self._update_toggle_button_position()
+            self.after(0, self._show_window_on_main)
         except Exception as e:
-            logging.error(f"Error in show_window: {e}")
+             logging.warning(f"Error scheduling show_window: {e}")
 
+    def _show_window_on_main(self):
+        """Main-thread logic for showing the window."""
+        try:
+            if self.winfo_exists():
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+        except Exception as e:
+            logging.warning(f"Error in _show_window_on_main: {e}")
 
     def quit_application(self):
-        logging.info("Quit command received.")
-        if hasattr(self, 'tray_icon') and self.tray_icon and getattr(self.tray_icon, 'HAS_NOTIFICATION', False):
-             try:
-                 self.tray_icon.stop()
-                 logging.info("Tray icon stopped.")
-             except Exception as e:
-                 logging.warning(f"Error stopping tray icon: {e}")
-        self.tray_icon = None
-        self.on_closing(force_quit=True)
-
-
-    def _on_minimize(self, event=None):
-        """Handles minimizing the window to the system tray."""
-        try:
-            if self.winfo_exists() and self.state() == 'iconic' and not self.minimized_to_tray:
-                logging.info("Minimizing to system tray via minimize button.")
-                self.minimized_to_tray = True
-                self.withdraw()
-        except Exception as e:
-            logging.debug(f"Ignoring minimize event during potential close: {e}")
-
+        """Stops the tray icon and schedules the app to close."""
+        logging.info("Quit requested from tray icon.")
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception as e:
+                logging.warning(f"Error stopping tray icon: {e}")
+        self.after(0, self.on_closing, True) # force_quit=True
 
     def on_closing(self, force_quit=False):
-        """Handles closing the window or quitting the application."""
+        """Handles the WM_DELETE_WINDOW protocol (close button 'X')."""
+        if self.is_shutting_down:
+             return
+             
         if force_quit:
-            if not self.is_shutting_down:
-                self.is_shutting_down = True
-                logging.info("Application closing initiated (force_quit=True).")
-                if self.is_unlocked:
-                    logging.info("Stopping background services...")
+            self.is_shutting_down = True
+            logging.info("App closing (force_quit=True).")
+            
+            if self.is_unlocked:
+                logging.info("Stopping backend services...")
+                try:
                     self.tunnel_manager.stop()
                     self.syncthing_manager.stop()
-                if hasattr(self, 'tray_icon') and self.tray_icon and getattr(self.tray_icon, 'HAS_NOTIFICATION', False):
-                    try:
-                        self.tray_icon.stop()
-                        logging.info("Tray icon stopped during quit.")
-                    except Exception as e:
-                        logging.warning(f"Error stopping tray icon during quit: {e}")
-                self.tray_icon = None
-                logging.info("Scheduling main window destruction.")
-                self.after(200, self.destroy)
+                    logging.info("Backend services stopped.")
+                except Exception as e:
+                    logging.error(f"Error stopping services: {e}", exc_info=True)
+            
+            if self.tray_icon and self.tray_icon.visible:
+                try: self.tray_icon.stop()
+                except Exception: pass 
+            self.tray_icon = None
+            
+            logging.info("Scheduling app destroy.")
+            self.after(200, self.destroy)
         else:
             logging.info("Hiding to system tray via close button.")
             self.minimized_to_tray = True
             self.withdraw()
+            
+    def handle_first_run(self):
+        """Handles first run by showing password setup UI directly."""
+        logging.info("Handling first run: showing setup UI.")
+        if hasattr(self, '_initial_frame') and self._initial_frame and self._initial_frame.winfo_exists():
+            for widget in self._initial_frame.winfo_children(): widget.destroy()
+            self._initial_frame.destroy()
+        self._initial_frame = ctk.CTkFrame(self, fg_color="transparent"); self._initial_frame.grid(row=0, column=0, sticky="nsew")
+        self._initial_frame.grid_rowconfigure(0, weight=1); self._initial_frame.grid_columnconfigure(0, weight=1)
+        center_frame = ctk.CTkFrame(self._initial_frame, corner_radius=10); center_frame.grid(row=0, column=0, sticky="", padx=30, pady=30)
+        ctk.CTkLabel(center_frame, text="Welcome to NydusNet", font=ctk.CTkFont(size=20, weight="bold")).pack(padx=30, pady=(30, 10))
+        ctk.CTkLabel(center_frame, text="Create a New Master Password:").pack(padx=30, pady=(10, 0))
+        entry_frame1 = ctk.CTkFrame(center_frame, fg_color="transparent"); entry_frame1.pack(padx=30, pady=5)
+        self.setup_entry1 = ctk.CTkEntry(entry_frame1, show="*", width=200); self.setup_entry1.pack(side="left")
+        show_icon = self.images.get("eye-show"); use_icons = bool(show_icon)
+        toggle_btn1 = ctk.CTkButton(entry_frame1, image=show_icon if use_icons else None, text="👁️" if not use_icons else "", width=28, anchor="center", command=lambda: self._toggle_setup_password_visibility(self.setup_entry1, toggle_btn1)); toggle_btn1.pack(side="left", padx=(5, 0))
+        ctk.CTkLabel(center_frame, text="Confirm Master Password:").pack(padx=30, pady=(10, 0))
+        entry_frame2 = ctk.CTkFrame(center_frame, fg_color="transparent"); entry_frame2.pack(padx=30, pady=5)
+        self.setup_entry2 = ctk.CTkEntry(entry_frame2, show="*", width=200); self.setup_entry2.pack(side="left")
+        self.setup_entry2.bind("<Return>", self._on_setup_confirm)
+        toggle_btn2 = ctk.CTkButton(entry_frame2, image=show_icon if use_icons else None, text="👁️" if not use_icons else "", width=28, anchor="center", command=lambda: self._toggle_setup_password_visibility(self.setup_entry2, toggle_btn2)); toggle_btn2.pack(side="left", padx=(5, 0))
+        ctk.CTkLabel(center_frame, text="Allowed: A-Z a-z 0-9 Space !@#$%^&*()_+-=[]{}|;:,.<>?", font=("", 10), wraplength=250).pack(padx=30, pady=5)
+        ctk.CTkButton(center_frame, text="Create Password", command=self._on_setup_confirm, width=230).pack(padx=30, pady=20)
+        self.after(100, lambda: self._safe_focus(self.setup_entry1))
 
-    def show_unlock_dialog(self):
-        if self.is_unlocked: return
-        is_first_run = not self.config_manager.is_configured()
-        dialog = UnlockDialog(self, first_run=is_first_run, controller=self)
+    def _toggle_setup_password_visibility(self, entry, button):
+        """Toggles visibility for password entries in the setup UI."""
+        if not entry or not button: return
+        try:
+            show_icon = self.images.get("eye-show")
+            hide_icon = self.images.get("eye-hide")
+            use_icons = bool(show_icon and hide_icon)
 
-        dialog.attributes('-topmost', True)
-        dialog.lift()
-        dialog.focus_force()
-        self.after(100, lambda: dialog.attributes('-topmost', False) if dialog.winfo_exists() else None)
-        self.after(50, lambda: dialog.entry1.focus_set() if dialog.winfo_exists() and hasattr(dialog, 'entry1') else None)
-
-        password = dialog.get_input()
-
-        if password is None:
-            logging.info("Unlock dialog closed by user. Exiting.")
-            if not self.is_shutting_down:
-                 self.quit_application()
-            return
-
-        if is_first_run:
-            self.handle_first_run(password)
-        else:
-            self.attempt_unlock(password)
-
-    def handle_first_run(self, password: str):
-        unlock_successful, recovery_key = self.config_manager.unlock_with_password(password)
-        if unlock_successful:
-            self.is_unlocked = True
-            logging.info("First run: Generating and saving SSH key pair for automation.")
-            try:
-                priv_path, pub_path = self.crypto_manager.generate_ssh_key_pair()
-                self.save_or_update_automation_credentials(priv_path, pub_path)
-            except Exception as e:
-                logging.error(f"Failed to generate/save SSH keys on first run: {e}", exc_info=True)
-                self.show_error("Error generating initial SSH keys. Check logs.")
-
-            key_dialog = RecoveryKeyDialog(self, recovery_key=recovery_key)
-            key_dialog.wait_window()
-
-            if not self.tray_icon: self._setup_tray_icon()
-            self._start_backend_services_threaded()
-        else:
-            self.show_error("Failed to create password. Please try again.")
-            self.after(100, self.show_unlock_dialog)
-
-    def attempt_unlock(self, password: str):
-        unlock_successful, _ = self.config_manager.unlock_with_password(password)
-        if unlock_successful:
-            self.is_unlocked = True
-            if not self.tray_icon: self._setup_tray_icon()
-            self._start_backend_services_threaded()
-        else:
-            self.show_error("Incorrect master password. Please try again.")
-            self.after(100, self.show_unlock_dialog)
-
-    def _start_backend_services_threaded(self):
-        loading_dialog = LoadingDialog(self)
-        self.update_idletasks() # Ensure dialog appears
-
-        def service_starter():
-            start_success = False
-            error_message = "An unknown error occurred during Syncthing startup." # Default error
-            try:
-                start_success = self.syncthing_manager.start()
-            except FileNotFoundError as fnf_error:
-                 logging.error(f"Syncthing executable not found during startup: {fnf_error}", exc_info=True)
-                 error_message = f"Critical Error: Syncthing component missing.\n\n{fnf_error}\n\nPlease reinstall NydusNet."
-                 start_success = False
-            except RuntimeError as rt_error:
-                 logging.error(f"Runtime error during Syncthing startup: {rt_error}", exc_info=True)
-                 error_message = f"Syncthing failed to start. Check logs.\nError: {rt_error}"
-                 start_success = False
-            except Exception as e:
-                logging.error(f"Unexpected exception during Syncthing start: {e}", exc_info=True)
-                error_message = f"An unexpected error occurred starting services. Check logs.\nError: {e}"
-                start_success = False
-
-            # --- Safely close loading dialog ---
-            if loading_dialog.winfo_exists():
-                self.after(0, loading_dialog.destroy)
-
-            # --- Handle result ---
-            if start_success:
-                logging.info("Syncthing started successfully.")
-                self.after(10, self.show_window)
-                self.after(20, lambda: self.show_frame("DashboardView"))
+            if entry.cget("show") == "*":
+                entry.configure(show="")
+                button.configure(image=hide_icon if use_icons else None,
+                                 text="🔒" if not use_icons else "")
             else:
-                logging.error(f"Syncthing manager failed to start. Error: {error_message}")
-                # --- Show error dialog and wait before quitting ---
-                def show_error_and_quit():
-                    error_dialog = ErrorDialog(self, message=error_message)
-                    error_dialog.wait_window() # Wait for user interaction
-                    self.quit_application() # Quit after OK is clicked
+                entry.configure(show="*")
+                button.configure(image=show_icon if use_icons else None,
+                                 text="👁️" if not use_icons else "")
+        except Exception as e:
+             logging.warning(f"Error toggling setup password visibility: {e}")
 
-                self.after(50, show_error_and_quit) # Schedule the error/quit sequence
+    def _on_setup_confirm(self, event=None):
+        """Validates and processes the password setup."""
+        if not self.setup_entry1 or not self.setup_entry2:
+             logging.error("Setup password entries not found.")
+             return
 
-        threading.Thread(target=service_starter, daemon=True).start()
+        password = self.setup_entry1.get()
+        password2 = self.setup_entry2.get()
+        
+        allowed_chars = r"^[A-Za-z0-9 !@#$%^&*()_+\-=\[\]{}|;:,.<>?]*$"
+        if password != password2:
+            self.show_error("Setup Error", "Passwords do not match.")
+            return
+        if not password:
+            self.show_error("Setup Error", "Password cannot be empty.")
+            return
+        if not re.fullmatch(allowed_chars, password):
+            self.show_error("Setup Error", "Password contains invalid characters..."); return
+            
+        unlocked, recovery_key = self.config_manager.unlock_with_password(password)
+        
+        if unlocked and recovery_key:
+            logging.info("First run setup complete via ConfigManager. Proceeding...")
+            self.is_unlocked = True; self.setup_entry1 = None; self.setup_entry2 = None
+            try: self.focus_set() 
+            except Exception: pass
+            if self._initial_frame and self._initial_frame.winfo_exists(): self._initial_frame.destroy()
+            self._initial_frame = None; logging.debug("Initial setup frame destroyed.")
+            self._show_loading_screen()
+            self._start_backend_services_threaded(callback=lambda rk=recovery_key: self._on_loading_complete(rk)) 
+        elif unlocked and not recovery_key:
+             logging.error("ConfigManager unlocked but did not return recovery key on first run.")
+             self.show_error("Setup Error", "Password set, but recovery key not generated.")
+        else:
+             logging.error("ConfigManager.unlock_with_password failed during first run setup.")
+             self.show_error("Setup Error", "Failed to finalize password setup.")
 
+    def _build_initial_ui(self):
+        """Creates the initial password entry or loading UI directly in the App window."""
+        logging.debug("Building initial UI...")
+        is_first_run = not self.config_manager.is_configured()
+        self._initial_frame = ctk.CTkFrame(self, fg_color="transparent"); self._initial_frame.grid(row=0, column=0, sticky="nsew")
+        self._initial_frame.grid_rowconfigure(0, weight=1); self._initial_frame.grid_columnconfigure(0, weight=1)
+        center_frame = ctk.CTkFrame(self._initial_frame, corner_radius=10); center_frame.grid(row=0, column=0, sticky="", padx=30, pady=30)
+        if not is_first_run:
+            ctk.CTkLabel(center_frame, text="NydusNet", font=ctk.CTkFont(size=20, weight="bold")).pack(padx=30, pady=(30, 10))
+            ctk.CTkLabel(center_frame, text="Enter Master Password:").pack(padx=30, pady=(10, 0))
+            entry_frame = ctk.CTkFrame(center_frame, fg_color="transparent"); entry_frame.pack(padx=30, pady=10)
+            self.password_entry = ctk.CTkEntry(entry_frame, show="*", width=200); self.password_entry.pack(side="left")
+            def on_unlock_return(event=None):
+                if hasattr(self, 'password_entry') and self.password_entry: self.attempt_unlock(self.password_entry.get())
+                return "break"
+            self.password_entry.bind("<Return>", on_unlock_return)
+            show_icon = self.images.get("eye-show"); use_icons = bool(show_icon)
+            toggle_btn1 = ctk.CTkButton(entry_frame, image=show_icon if use_icons else None, text="👁️" if not use_icons else "", width=28, anchor="center", command=lambda: self._toggle_initial_password_visibility()); toggle_btn1.pack(side="left", padx=(5, 0))
+            button_frame = ctk.CTkFrame(center_frame, fg_color="transparent"); button_frame.pack(padx=30, pady=(10, 20))
+            ctk.CTkButton(button_frame, text="Unlock", width=110, command=lambda: self.attempt_unlock(self.password_entry.get() if self.password_entry else "")).pack(side="left", padx=5)
+            ctk.CTkButton(button_frame, text="Forgot Password?", fg_color="transparent", width=110, command=self.forgot_password).pack(side="left", padx=5)
+        else:
+            ctk.CTkLabel(center_frame, text="Welcome to NydusNet!", font=ctk.CTkFont(size=20, weight="bold")).pack(padx=30, pady=30)
+            ctk.CTkLabel(center_frame, text="Initial setup required.").pack(padx=30, pady=10)
+            ctk.CTkButton(center_frame, text="Start Setup", command=self.handle_first_run).pack(padx=30, pady=20)
+        logging.debug("Initial UI built.")
+
+    def _toggle_initial_password_visibility(self):
+        """Toggles visibility for the password entry in the initial UI."""
+        entry = self.password_entry; button = None
+        if entry and entry.master:
+            for w in entry.master.winfo_children():
+                if isinstance(w, ctk.CTkButton): button = w; break
+        if not entry or not button: return
+        try:
+            show_icon = self.images.get("eye-show"); hide_icon = self.images.get("eye-hide"); use_icons = bool(show_icon and hide_icon)
+            if entry.cget("show") == "*": entry.configure(show=""); button.configure(image=hide_icon if use_icons else None, text="🔒" if not use_icons else "")
+            else: entry.configure(show="*"); button.configure(image=show_icon if use_icons else None, text="👁️" if not use_icons else "")
+        except Exception as e: logging.warning(f"Error toggling initial password visibility: {e}")
+
+    def _initial_check(self):
+        """Performs initial checks (like first run) and sets focus."""
+        logging.debug("Performing initial check...")
+        is_first_run = not self.config_manager.is_configured()
+        if is_first_run:
+            setup_button = None
+            if self._initial_frame:
+                 try:
+                     center_frame = self._initial_frame.winfo_children()[0]
+                     for w in center_frame.winfo_children():
+                          if isinstance(w, ctk.CTkButton) and "Setup" in w.cget("text"): setup_button = w; break
+                 except Exception: pass
+            if setup_button: self._safe_focus(setup_button)
+        else:
+            if hasattr(self, 'password_entry') and self.password_entry: self._safe_focus(self.password_entry)
+
+    def _safe_focus(self, entry_widget):
+        """Safely sets focus if the App window and widget still exist."""
+        if hasattr(self, '_focus_after_id'): self._focus_after_id = None
+        try:
+            if self.winfo_exists() and entry_widget and entry_widget.winfo_exists():
+                try: entry_widget.focus_set()
+                except Exception as focus_e: logging.warning(f"Error during focus_set call: {focus_e}")
+        except Exception as e: logging.error(f"Error checking widget for focus: {e}", exc_info=True)
+
+    def attempt_unlock(self, password):
+        """Attempts to unlock, shows loading screen on success."""
+        logging.info("Attempting unlock...")
+        if self.is_unlocked: return
+        if self._focus_after_id:
+            try: self.after_cancel(self._focus_after_id)
+            except Exception: pass
+            self._focus_after_id = None
+        unlocked, message_or_recovery_key = self.config_manager.unlock_with_password(password)
+        if unlocked:
+            self.is_unlocked = True
+            try: self.focus_set() 
+            except Exception: pass
+            if hasattr(self, '_initial_frame') and self._initial_frame and self._initial_frame.winfo_exists(): self._initial_frame.destroy()
+            self._initial_frame = None; self.password_entry = None
+            logging.debug("Initial UI frame destroyed.")
+            self._show_loading_screen()
+            self._start_backend_services_threaded(callback=lambda rk=message_or_recovery_key: self._on_loading_complete(rk)) 
+        else:
+            ErrorDialog(self, title="Unlock Failed", message=message_or_recovery_key or "Incorrect password.")
+            if hasattr(self, 'password_entry') and self.password_entry:
+                self.password_entry.delete(0, 'end')
+                self._focus_after_id = self.after(50, lambda: self._safe_focus(self.password_entry))
+                
+    def _show_loading_screen(self):
+        """Displays a loading screen UI."""
+        logging.debug("Showing loading screen...")
+        self._loading_frame = ctk.CTkFrame(self, fg_color="transparent"); self._loading_frame.grid(row=0, column=0, sticky="nsew")
+        self._loading_frame.grid_rowconfigure(0, weight=1); self._loading_frame.grid_columnconfigure(0, weight=1)
+        center_frame = ctk.CTkFrame(self._loading_frame, corner_radius=10); center_frame.grid(row=0, column=0, sticky="")
+        ctk.CTkLabel(center_frame, text="NydusNet", font=ctk.CTkFont(size=20, weight="bold")).pack(padx=30, pady=(30, 10))
+        ctk.CTkLabel(center_frame, text="Initializing services...").pack(padx=30, pady=10)
+        progressbar = ctk.CTkProgressBar(center_frame, mode="indeterminate"); progressbar.pack(padx=30, pady=10, fill="x"); progressbar.start()
+        ctk.CTkLabel(center_frame, text="Please wait...", text_color="gray60").pack(padx=30, pady=(0, 20))
+        self.update(); self.update_idletasks()
+        
+    def _start_backend_services_threaded(self, callback=None):
+        """Starts Syncthing and Tunnel Monitor in a separate thread."""
+        logging.info("Starting backend services in a new thread...")
+        def service_starter():
+            logging.debug("Service starter thread begins.")
+            try:
+                logging.info("Attempting to start Syncthing...")
+                self.syncthing_manager.start()
+                logging.info("Syncthing started successfully.")
+            except Exception as e:
+                logging.critical(f"Critical error starting Syncthing: {e}", exc_info=True)
+                self.after(0, lambda: self.show_error(f"Syncthing Startup Failed", f"Could not start Syncthing:\n{e}"))
+
+            logging.info("Attempting to start Tunnel Manager monitor...")
+            try:
+                self.tunnel_manager.start_all_tunnels()
+                logging.info("Initial tunnel start sequence triggered.")
+            except Exception as e:
+                logging.error(f"Error starting initial tunnels: {e}", exc_info=True)
+
+            logging.debug("Service starter thread finished.")
+            if callback:
+                logging.debug("Scheduling loading complete callback.")
+                self.after(0, callback) 
+
+        thread = threading.Thread(target=service_starter, daemon=True); thread.start()
+        
+    def _on_loading_complete(self, recovery_key=None):
+        """Callback run after services are initialized. Resizes window and builds UI."""
+        logging.info("Backend services initialized. Resizing window and building main UI.")
+
+        logging.debug("Resizing window to main size...")
+        try:
+            self.geometry(self._main_size)
+            self.resizable(True, True)
+            self.minsize(self._main_minsize[0], self._main_minsize[1])
+            self.update_idletasks() 
+            self._center_window()
+            logging.debug("Window resized and centered.")
+        except Exception as e:
+             logging.error(f"Error resizing/centering window in _on_loading_complete: {e}")
+
+        if hasattr(self, '_loading_frame') and self._loading_frame and self._loading_frame.winfo_exists():
+            self._loading_frame.destroy()
+        self._loading_frame = None
+        logging.debug("Loading frame destroyed.")
+
+        self._build_main_ui()
+        self.update_idletasks()
+        self.show_frame("DashboardView") # Show Tunnels (Dashboard) view first
+        logging.info("Main UI is now visible.")
+        
+        self.attributes("-topmost", False)
+        logging.debug("Window always-on-top disabled.")
+
+        if recovery_key:
+             self.after(200, lambda: self.view_recovery_key(recovery_key))
+                 
+    def _center_window(self):
+        """Centers the window on the screen."""
+        try:
+            self.update_idletasks() 
+            width = self.winfo_width(); height = self.winfo_height()
+            screen_width = self.winfo_screenwidth(); screen_height = self.winfo_screenheight()
+            x = max(0, (screen_width - width) // 2); y = max(0, (screen_height - height) // 2)
+            self.geometry(f"+{x}+{y}")
+        except Exception as e: logging.warning(f"Error centering window: {e}")
 
     def forgot_password(self):
-        logging.info("Starting password reset workflow.")
-        recovery_dialog = RecoveryKeyDialog(self, title="Password Reset", input_mode=True)
-        recovery_key = recovery_dialog.get_input()
-        if not recovery_key: return
-
-        new_password_dialog = UnlockDialog(self, first_run=True, title="Create New Master Password", controller=self)
-        new_password = new_password_dialog.get_input()
-        if not new_password: return
-
-        if self.config_manager.re_encrypt_with_new_password(old_key=recovery_key, new_password=new_password):
-            logging.info("Password successfully reset using recovery key.")
-            conf_dialog = ConfirmationDialog(self, title="Success", message="Password successfully reset!")
-            conf_dialog.wait_window()
-            self.attempt_unlock(new_password)
-        else:
-            self.show_error("Password reset failed. The recovery key was likely incorrect.")
-            self.after(100, self.show_unlock_dialog)
-
-
+        """Handles the 'Forgot Password' button click."""
+        logging.info("'Forgot Password' clicked.")
+        self.show_error("Password Recovery", "Password recovery using key not yet implemented.")
+        
     def change_master_password(self):
-        logging.info("Starting master password change workflow.")
-        old_password_dialog = UnlockDialog(self, title="Enter Old Master Password", controller=self)
-        old_password = old_password_dialog.get_input()
-        if not old_password: return
+        """Shows placeholder as ChangePasswordDialog is missing."""
+        logging.debug("Change master password requested.")
+        self.show_error("Not Implemented", "Changing the master password is not yet implemented in this version.")
 
-        try:
-            if self.config_manager.verify_password(old_password):
-                new_password_dialog = UnlockDialog(self, first_run=True, title="Enter New Master Password", controller=self)
-                new_password = new_password_dialog.get_input()
-                if not new_password: return
-
-                if self.config_manager.re_encrypt_with_new_password(old_key=old_password, new_password=new_password):
-                    conf_dialog = ConfirmationDialog(self, title="Success", message="Master password successfully changed!")
-                    conf_dialog.wait_window()
-                else:
-                    self.show_error("Failed to change password during re-encryption. Check logs.")
-            else:
-                self.show_error("Incorrect old password.")
-        except Exception as e:
-            logging.error(f"Error during password change: {e}", exc_info=True)
-            self.show_error(f"An unexpected error occurred during password change.")
-
-
-    def view_recovery_key(self):
-        logging.info("Attempting to display recovery key.")
-        password_dialog = UnlockDialog(self, title="Enter Master Password to View Key", controller=self)
-        password = password_dialog.get_input()
-        if not password: return
-
-        if self.config_manager.verify_password(password):
-            recovery_key = self.config_manager.get_recovery_key(password)
-            if recovery_key:
-                RecoveryKeyDialog(self, recovery_key=recovery_key, input_mode=False)
-            else:
-                self.show_error("Recovery key could not be retrieved even with the correct password. Config might be inconsistent.")
-        else:
-            self.show_error("Incorrect master password.")
-
+    def view_recovery_key(self, key=None):
+        """Shows the recovery key (if provided) or retrieves and shows it."""
+        logging.debug("View recovery key requested.")
+        recovery_key = key
+        if not recovery_key:
+             if not self.is_unlocked: self.show_error("Error", "Must be unlocked."); return
+             recovery_key = self.config_manager.get_recovery_key()
+        if recovery_key: RecoveryKeyDialog(self, recovery_key=recovery_key, title="Recovery Key")
+        else: self.show_error("Error", "Could not retrieve recovery key.")
 
     def show_frame(self, page_name: str):
-        """Shows the selected frame and updates the sidebar button states."""
-        if not self.is_unlocked:
-             logging.warning(f"Attempted to show frame '{page_name}' while locked.")
+        """Raises the specified frame to the top and makes it visible."""
+        if not self.is_unlocked or not self.frames:
+             logging.warning(f"Cannot show frame {page_name}, not unlocked or UI not built.")
              return
-        if page_name not in self.frames:
-            logging.error(f"Attempted to show unknown frame: {page_name}")
-            return
 
         logging.info(f"Switching to view: {page_name}")
+        frame_to_show = self.frames.get(page_name)
+        if not frame_to_show:
+             logging.error(f"Cannot show frame: View '{page_name}' not found."); return
 
-        selected_color = ("gray75", "gray25")
+        for name, frame in self.frames.items():
+            if frame is not frame_to_show and frame.winfo_ismapped():
+                 if hasattr(frame, 'on_leave'):
+                      try: frame.on_leave()
+                      except Exception as e: logging.error(f"Error calling on_leave for {name}: {e}")
+                 frame.grid_remove() 
 
-        self.dashboard_button.configure(fg_color=selected_color if page_name == "DashboardView" else "transparent")
-        self.servers_button.configure(fg_color=selected_color if page_name == "ServersView" else "transparent")
-        self.settings_button.configure(fg_color=selected_color if page_name == "SettingsView" else "transparent")
-        self.history_button.configure(fg_color=selected_color if page_name == "HistoryView" else "transparent")
-        self.debug_button.configure(fg_color=selected_color if page_name == "DebugView" else "transparent")
-
-        frame = self.frames[page_name]
-
-        if hasattr(frame, 'enter') and callable(getattr(frame, 'enter')):
-            self.after(0, frame.enter)
-
-        frame.tkraise()
-        self.after(10, self._update_toggle_button_position)
-
+        if frame_to_show:
+            if hasattr(frame_to_show, 'on_enter'):
+                 try: frame_to_show.on_enter()
+                 except Exception as e: logging.error(f"Error calling on_enter for {page_name}: {e}", exc_info=True)
+            frame_to_show.grid(row=0, column=0, padx=0, pady=0, sticky="nsew") # Make visible
+            frame_to_show.tkraise() # Bring to front
 
     def refresh_dashboard(self):
-        """Safely schedules a refresh of the dashboard (Tunnels) view if visible."""
-        if self.is_shutting_down: return
-        dashboard = self.frames.get("DashboardView")
-        if dashboard and self.is_unlocked and dashboard.winfo_viewable():
-            logging.debug("Scheduling Tunnels view refresh.")
-            self.after(0, dashboard.load_tunnels)
-        else:
-             logging.debug("Skipping Tunnels view refresh (not visible or not ready).")
-
-
-    def show_error(self, message: str):
-        """Displays an error dialog."""
-        logging.error(f"Displaying error: {message}")
-        ErrorDialog(self, message=message)
-
-
+        """Refreshes the dashboard view if it exists."""
+        logging.debug("Scheduling Tunnels (Dashboard) refresh.")
+        if ("DashboardView" in self.frames 
+            and self.frames["DashboardView"] 
+            and self.frames["DashboardView"].winfo_exists()):
+            self.after(0, self.frames["DashboardView"].sync_tunnel_list)
+        else: 
+            logging.debug("Skipping Tunnels refresh (frame not created/destroyed).")
+             
+    def show_error(self, title: str, message: str = None):
+        """Displays a modal error dialog."""
+        if message is None: message = title
+        logging.warning(f"Showing Error Dialog: Title='{title}', Message='{message}'")
+        if self.winfo_exists():
+             self.after(0, lambda: ErrorDialog(self, title=title, message=message))
+        
     def set_appearance_mode(self, mode: str):
-        """Sets the application's appearance mode."""
+        """Sets the app's appearance mode (Light/Dark/System)."""
         logging.info(f"Setting appearance mode to: {mode}")
-        ctk.set_appearance_mode(mode)
-        self.after(10, self._update_toggle_button_position)
+        ctk.set_appearance_mode(mode.lower())
+        
+    def provision_server(self, server: dict, admin_pass: str = "", certbot_email: str = ""): # Made args optional
+        """Starts the provisioning process for a server in a new thread."""
+        logging.info(f"Starting provisioning for server: {server.get('name')}")
+        pub_key = self.get_automation_public_key()
+        if not pub_key: self.show_error("Provisioning Failed", "Could not read public SSH key."); return
+        
+        prov_dialog = ProvisionDialog(self, server_name=server.get('name', server['ip_address']), server_ip=server['ip_address'])
+        result = prov_dialog.get_input() # Get user/pass/email
+        if not result: logging.info("Provisioning cancelled by user."); return
 
-
-    def provision_server(self, server_id):
-        server = self.get_object_by_id(server_id)
-        if not server:
-            self.show_error(f"Server not found (ID: {server_id})."); return
-
-        dialog = ProvisionDialog(self, server.get('name', 'Unknown'), server.get('ip_address', 'No IP'))
-        creds = dialog.get_input()
-        if not creds: return
-
-        creds_obj = self.get_automation_credentials()
-        if not creds_obj or not creds_obj.get('ssh_public_key_path'):
-            self.show_error("Public SSH key path not configured. Please set it in Settings > SSH Keys.")
-            return
-
-        pub_key_path = creds_obj['ssh_public_key_path']
-        try:
-            if not os.path.exists(pub_key_path):
-                 raise FileNotFoundError(f"Public key file not found at: {pub_key_path}")
-            with open(pub_key_path, 'r') as f:
-                pub_key_string = f.read().strip()
-            if not pub_key_string:
-                 raise ValueError("Public key file is empty.")
-        except FileNotFoundError as e:
-            self.show_error(str(e)); return
-        except ValueError as e:
-             self.show_error(str(e)); return
-        except Exception as e:
-             logging.error(f"Error reading public key {pub_key_path}: {e}", exc_info=True)
-             self.show_error(f"Error reading public key. Check file permissions and content."); return
-
-        provisioner = ServerProvisioner(server['ip_address'], creds['user'], creds['password'], pub_key_string)
-        log_dialog = ProvisioningLogDialog(self, server['name'])
-
-        def run_in_thread():
-            success, final_log = provisioner.run()
-            self.after(0, lambda: log_dialog.complete(success) if log_dialog.winfo_exists() else None)
-            if success:
-                logging.info(f"Server {server_id} provisioned successfully.")
-                current_server_data = self.get_object_by_id(server_id)
-                if current_server_data:
-                    updated_server = current_server_data.copy()
-                    updated_server['is_provisioned'] = True
-                    if not updated_server.get('tunnel_user'):
-                        updated_server['tunnel_user'] = "tunnel"
-                    self.config_manager.update_object(server_id, updated_server)
-                    if "ServersView" in self.frames:
-                        self.after(10, self.frames["ServersView"].enter)
-                else:
-                    logging.warning(f"Server {server_id} disappeared during provisioning.")
-            else:
-                 logging.error(f"Server provisioning failed for {server_id}.")
-
-        def log_monitor():
-            while provision_thread.is_alive():
-                if log_dialog.winfo_exists():
-                    self.after(50, lambda: log_dialog.update_log(provisioner.log_output) if log_dialog.winfo_exists() else None)
-                time.sleep(0.2)
-            if log_dialog.winfo_exists():
-                self.after(50, lambda: log_dialog.update_log(provisioner.log_output) if log_dialog.winfo_exists() else None)
-
-        provision_thread = threading.Thread(target=run_in_thread, daemon=True)
-        provision_thread.start()
-        monitor_thread = threading.Thread(target=log_monitor, daemon=True)
-        monitor_thread.start()
+        log_dialog = ProvisioningLogDialog(self, server_name=server.get('name', server['ip_address']))
+        
+        def run_provisioning():
+            try:
+                provisioner = ServerProvisioner(host=server['ip_address'], admin_user=result['user'], admin_password=result['password'], tunnel_user_public_key_string=pub_key, certbot_email=result['email'])
+                success, logs = provisioner.provision_vps()
+                self.after(0, log_dialog.update_log, logs)
+                if success:
+                    self.after(0, log_dialog.complete, True); server['is_provisioned'] = True; server['tunnel_user'] = "tunnel"; server['admin_user'] = result['user']; self.save_object(server['id'], server)
+                    if "ServersView" in self.frames and self.frames["ServersView"].winfo_exists(): self.after(100, self.frames["ServersView"].load_servers)
+                else: self.after(0, log_dialog.complete, False)
+            except Exception as e:
+                error_msg = f"\n\n--- CRITICAL ERROR ---\n{e}"; logging.error(f"Critical provisioning error: {e}", exc_info=True)
+                self.after(0, log_dialog.update_log, [error_msg]); self.after(0, log_dialog.complete, False)
+        
+        threading.Thread(target=run_provisioning, daemon=True).start()
 
     # --- Passthrough Methods ---
-    def get_all_objects_for_debug(self): return self.config_manager.get_all_objects_for_debug()
-    def get_object_by_id(self, obj_id: str): return self.config_manager.get_object_by_id(obj_id)
-    def get_tunnels(self): return self.config_manager.get_tunnels()
-    def get_servers(self): return self.config_manager.get_servers()
-    def get_clients(self): return self.config_manager.get_clients()
-    def get_server_name(self, server_id): return self.config_manager.get_server_name(server_id)
-    def get_client_name(self, client_id): return self.config_manager.get_client_name(client_id)
-    def get_automation_credentials(self): return self.config_manager.get_automation_credentials()
-    def get_my_device_name(self):
-        try: return socket.gethostname()
-        except Exception: return "Unknown Device"
-    def get_my_device_id(self):
-        if not self.syncthing_id_ready.is_set():
-             logging.debug("Waiting briefly for Syncthing ID...")
-             self.syncthing_id_ready.wait(timeout=5.0)
-        device_id = self.syncthing_manager.my_device_id
-        return device_id
-    def get_clients_for_dropdown(self):
-        clients = self.get_clients()
-        my_id = self.get_my_device_id()
-        my_name = f"{self.get_my_device_name()} (This Device)"
-        client_map = {my_name: my_id} if my_id else {}
-        for client in clients:
-            client_syncthing_id = client.get('syncthing_id')
-            if client_syncthing_id and client_syncthing_id != my_id:
-                name = client.get('name', client_syncthing_id[:12])
-                client_map[name] = client_syncthing_id
-        return client_map, sorted(list(client_map.keys()))
-    def save_or_update_automation_credentials(self, priv, pub):
-        self.config_manager.save_or_update_automation_credentials(priv, pub)
-    def browse_for_file(self, title="Select a file"):
-        return filedialog.askopenfilename(title=title, parent=self)
-    def add_new_tunnel(self):
-        provisioned_servers = [s for s in self.get_servers() if s.get('is_provisioned')]
-        if not provisioned_servers:
-            self.show_error("You must register and successfully set up (provision) a Server before creating a tunnel.")
-            return
-        dialog = TunnelDialog(self, controller=self, title="Add New Tunnel")
-        data = dialog.get_input()
-        if data:
-            new_id = self.config_manager.add_object('tunnel', data)
-            if new_id:
-                logging.info(f"Added new tunnel: {new_id}")
-                if data.get('enabled') and data.get('assigned_client_id') == self.get_my_device_id():
-                    self.start_tunnel(new_id)
-                self.refresh_dashboard()
-            else:
-                logging.error("Failed to add new tunnel object.")
-                self.show_error("Failed to save the new tunnel.")
-    def edit_tunnel(self, tunnel_id):
-        tunnel_data = self.get_object_by_id(tunnel_id)
-        if not tunnel_data:
-             self.show_error(f"Tunnel with ID {tunnel_id} not found for editing.")
-             return
-        dialog = TunnelDialog(self, controller=self, title="Edit Tunnel", initial_data=tunnel_data)
-        new_data = dialog.get_input()
-        if new_data:
-             updated = self.config_manager.update_object(tunnel_id, new_data)
-             if updated:
-                  logging.info(f"Updated tunnel: {tunnel_id}")
-                  was_enabled = tunnel_data.get('enabled', False)
-                  now_enabled = new_data.get('enabled', False)
-                  current_my_id = self.get_my_device_id()
-                  was_mine = tunnel_data.get('assigned_client_id') == current_my_id
-                  now_mine = new_data.get('assigned_client_id') == current_my_id
-                  if now_mine and now_enabled and (not was_enabled or not was_mine):
-                      self.start_tunnel(tunnel_id)
-                  elif (not now_mine or not now_enabled) and was_mine and was_enabled:
-                       self.stop_tunnel(tunnel_id)
-                  self.refresh_dashboard()
-             else:
-                  logging.error(f"Failed to update tunnel {tunnel_id}")
-                  self.show_error("Failed to save tunnel updates.")
-    def delete_tunnel(self, tunnel_id):
-        tunnel = self.get_object_by_id(tunnel_id)
-        if not tunnel:
-            logging.warning(f"Attempted to delete non-existent tunnel: {tunnel_id}")
-            self.refresh_dashboard()
-            return
-        hostname = tunnel.get('hostname', tunnel_id[:8])
-        dialog = ConfirmationDialog(self, message=f"Are you sure you want to delete the tunnel '{hostname}'?")
-        if dialog.get_input():
-             logging.info(f"Deleting tunnel: {tunnel_id}")
-             self.stop_tunnel(tunnel_id)
-             deleted = self.config_manager.delete_object(tunnel_id)
-             if deleted:
-                 self.refresh_dashboard()
-             else:
-                  logging.error(f"Failed to delete tunnel {tunnel_id} from config.")
-                  self.show_error("Failed to delete the tunnel.")
-    def view_tunnel_log(self, tunnel_id: str):
-        logs = self.tunnel_manager.get_tunnel_log(tunnel_id)
-        tunnel = self.get_object_by_id(tunnel_id)
-        title = f"Logs for {tunnel.get('hostname', tunnel_id[:8])}" if tunnel else f"Logs for {tunnel_id[:8]}"
-        LogViewerDialog(self, log_content=logs or "No logs available for this tunnel yet.", title=title)
-    def start_tunnel(self, tunnel_id: str):
-        logging.info(f"Attempting to start tunnel: {tunnel_id}")
-        success, message = self.tunnel_manager.start_tunnel(tunnel_id)
-        if not success:
-             self.show_error(message or f"Failed to start tunnel {tunnel_id}. Check logs.")
-        self.after(100, self.refresh_dashboard)
-    def stop_tunnel(self, tunnel_id: str):
-        logging.info(f"Stopping tunnel: {tunnel_id}")
-        self.tunnel_manager.stop_tunnel(tunnel_id)
-        self.after(100, self.refresh_dashboard)
-    def start_all_tunnels(self):
-         logging.info("Starting all enabled tunnels assigned to this device.")
-         self.tunnel_manager.start_all_tunnels()
-         self.after(100, self.refresh_dashboard)
-    def stop_all_tunnels(self):
-         logging.info("Stopping all tunnels currently managed by this device.")
-         self.tunnel_manager.stop_all_tunnels()
-         self.after(100, self.refresh_dashboard)
-    def get_tunnel_statuses(self):
-         return self.tunnel_manager.get_tunnel_statuses()
-    def add_new_device(self):
-        my_id = self.get_my_device_id()
-        if not my_id:
-            self.show_error("Syncthing is still initializing. Please wait a moment and try again.")
-            return
-        invite_string = self.syncthing_manager.generate_invite()
-        if invite_string:
-             InviteDialog(self, invite_string=invite_string)
-        else:
-             self.show_error("Failed to generate device invite string. Check Syncthing status and logs.")
-    def add_new_server(self):
-        dialog = ServerDialog(self, title="Register New Server")
-        server_info = dialog.get_input()
-        if server_info:
-            new_id = self.config_manager.add_object('server', server_info)
-            if new_id:
-                logging.info(f"Added new server: {new_id}")
-                if "ServersView" in self.frames:
-                     self.frames["ServersView"].enter()
-            else:
-                 logging.error("Failed to add new server object.")
-                 self.show_error("Failed to save the new server.")
-    def edit_server(self, server_id):
-        server_data = self.get_object_by_id(server_id)
-        if not server_data:
-            self.show_error(f"Server with ID {server_id} not found for editing.")
-            return
-        dialog = ServerDialog(self, title="Edit Server", initial_data=server_data)
-        new_data = dialog.get_input()
-        if new_data:
-             updated = self.config_manager.update_object(server_id, new_data)
-             if updated:
-                 logging.info(f"Updated server: {server_id}")
-                 if "ServersView" in self.frames:
-                      self.frames["ServersView"].enter()
-                 self.refresh_dashboard()
-             else:
-                  logging.error(f"Failed to update server {server_id}.")
-                  self.show_error("Failed to save server updates.")
-    def delete_server(self, server_id):
-        server = self.get_object_by_id(server_id)
-        if not server:
-             logging.warning(f"Attempted to delete non-existent server: {server_id}")
-             if "ServersView" in self.frames: self.frames["ServersView"].enter()
-             return
-        server_name = server.get('name', server_id[:8])
-        dependent_tunnels = [t for t in self.get_tunnels() if t.get('server_id') == server_id]
-        if dependent_tunnels:
-            tunnel_names = "\n - ".join([t.get('hostname', t['id'][:8]) for t in dependent_tunnels])
-            self.show_error(f"Cannot delete server '{server_name}'.\nIt is used by the following tunnels:\n - {tunnel_names}\n\nPlease edit or delete these tunnels first.")
-            return
-        dialog = ConfirmationDialog(self, message=f"Are you sure you want to delete the server '{server_name}'?")
-        if dialog.get_input():
-            logging.info(f"Deleting server: {server_id}")
-            deleted = self.config_manager.delete_object(server_id)
-            if deleted:
-                if "ServersView" in self.frames:
-                     self.frames["ServersView"].enter()
-            else:
-                 logging.error(f"Failed to delete server {server_id} from config.")
-                 self.show_error("Failed to delete the server.")
-    def remove_client(self, client_id):
-        my_id = self.get_my_device_id()
-        if client_id == my_id:
-            self.show_error("Cannot remove this device from itself.")
-            return
+    def get_object_by_id(self, obj_id: str): return self.config_manager.get_object_by_id(obj_id) if self.is_unlocked else None
+    def get_tunnels(self): return self.config_manager.get_tunnels() if self.is_unlocked else []
+    def get_servers(self): return self.config_manager.get_servers() if self.is_unlocked else []
+    def get_clients(self): return self.config_manager.get_clients() if self.is_unlocked else []
+    def get_server_name(self, server_id: str): return self.config_manager.get_server_name(server_id) if self.is_unlocked else "Unknown"
+    def get_client_name(self, client_id: str): return self.config_manager.get_client_name(client_id) if self.is_unlocked else client_id[:8] if client_id else "None"
+    def get_automation_credentials(self): return self.config_manager.get_automation_credentials() if self.is_unlocked else None
+    def get_automation_public_key(self) -> str | None:
+        creds = self.get_automation_credentials(); path = creds.get('ssh_public_key_path') if creds else None
+        if not path or not os.path.exists(path): return None
+        try:
+             with open(path, 'r', encoding='utf-8') as f: return f.read().strip()
+        except Exception: return None
+    def save_object(self, obj_id: str, data: dict): self.config_manager.update_object(obj_id, data)
+    def add_object(self, obj_type: str, data: dict) -> str: return self.config_manager.add_object(obj_type, data)
+    def delete_object(self, obj_id: str): self.config_manager.delete_object(obj_id)
+    def save_automation_credentials(self, private_key_path: str, public_key_path: str): self.config_manager.save_or_update_automation_credentials(private_key_path, public_key_path)
+    def get_my_device_id(self) -> str | None: return self.syncthing_manager.my_device_id
+    def get_my_device_name(self) -> str: return os.getenv('COMPUTERNAME', 'My Device')
+    def get_syncthing_devices(self) -> list: return self.syncthing_manager.get_devices()
+    def generate_syncthing_invite(self) -> str | None: return self.syncthing_manager.generate_invite()
+    def accept_syncthing_invite(self, invite_string: str) -> bool: return self.syncthing_manager.accept_invite(invite_string)
+    def remove_syncthing_device(self, device_id: str): self.syncthing_manager.remove_device(device_id)
+    def start_tunnel(self, tunnel_id: str) -> tuple[bool, str]: return self.tunnel_manager.start_tunnel(tunnel_id)
+    def stop_tunnel(self, tunnel_id: str): self.tunnel_manager.stop_tunnel(tunnel_id)
+    def get_tunnel_statuses(self) -> dict: return self.tunnel_manager.get_tunnel_statuses()
+    def get_tunnel_log(self, tunnel_id: str) -> str: return self.tunnel_manager.get_tunnel_log(tunnel_id)
+    def get_clients_for_dropdown(self) -> tuple[dict, list]:
+        client_map = {}; client_names = []
+        my_id = self.get_my_device_id(); my_name = f"{self.get_my_device_name()} (This Device)"
+        if my_id: client_map[my_name] = my_id; client_names.append(my_name)
+        for client in self.get_clients():
+            cid = client.get('syncthing_id'); cname = client.get('name') or f"Unknown ({cid[:7]}...)" if cid else "Invalid Client"
+            if cid:
+                display_name = cname; count = 1
+                while display_name in client_map: count += 1; display_name = f"{cname} ({count})"
+                client_map[display_name] = cid; client_names.append(display_name)
+        client_names = sorted(client_names, key=lambda x: (x != my_name, x))
+        return client_map, client_names
+    def get_debug_info(self) -> dict:
+        info = { "app": {"is_unlocked": self.is_unlocked, "is_shutting_down": self.is_shutting_down, "syncthing_id_ready": self.syncthing_id_ready.is_set()}, "syncthing": {"is_running": self.syncthing_manager.is_running, "my_device_id": self.syncthing_manager.my_device_id, "api_client": bool(self.syncthing_manager.api_client), "exe_path": self.syncthing_manager.syncthing_exe_path, "sync_folder_path": self.syncthing_manager.sync_folder_path}, "tunnels": {"active_processes": {tid: p.pid for tid, p in self.tunnel_manager.active_tunnels.items() if p and p.poll() is None}, "error_messages": self.tunnel_manager.tunnel_error_messages, "log_keys": list(self.tunnel_manager.tunnel_logs.keys())}, "config": {"sync_path": self.config_manager.sync_path, "credentials_loaded": bool(self.config_manager._credentials), "object_count": len(self.config_manager._in_memory_state), "index_count": len(self.config_manager._file_index)} }
+        return info
+        
+    def get_all_objects_for_debug(self):
+        if not self.is_unlocked: return {}
+        return self.config_manager.get_all_objects_for_debug()
+    def get_history_file_index(self):
+        if not self.is_unlocked: return []
+        return self.config_manager.get_history_file_index()
+    def get_file_version_history(self, file_id: str):
+        if not self.is_unlocked: return []
+        return self.config_manager.get_file_version_history(file_id)
+    def get_file_content_at_version(self, file_id: str, timestamp):
+        if not self.is_unlocked: return "[Unlock Required]"
+        return self.config_manager.get_file_content_at_version(file_id, timestamp)
+        
+    def browse_for_file(self, title="Select File"):
+        from tkinter import filedialog
+        filepath = filedialog.askopenfilename(title=title, parent=self) 
+        return filepath if filepath else None
+
+    def remove_client(self, client_id: str):
+        """Removes a client device after confirmation."""
+        logging.info(f"Remove client requested: {client_id}")
+        if not self.is_unlocked: return
         client_name = self.get_client_name(client_id)
-        if not client_name:
-            try:
-                 st_devices = self.syncthing_manager.get_devices()
-                 client_name = next((d['name'] for d in st_devices if d.get('deviceID') == client_id), client_id[:12])
-            except Exception: client_name = client_id[:12]
-        dialog = ConfirmationDialog(self, message=f"Remove device '{client_name}' ({client_id[:7]}...)?")
+        dialog = ConfirmationDialog(self, title="Remove Device?", message=f"Remove device '{client_name}'?")
         if dialog.get_input():
-            logging.info(f"Removing client: {client_id}")
-            assigned_tunnels = [t for t in self.get_tunnels() if t.get('assigned_client_id') == client_id]
-            if assigned_tunnels:
-                tunnel_names = "\n - ".join([t.get('hostname', t['id'][:8]) for t in assigned_tunnels])
-                reassign_dialog = ConfirmationDialog(self, title="Reassign Tunnels?",
-                                                      message=f"Device '{client_name}' manages these tunnels:\n - {tunnel_names}\n\nReassign them to THIS device ('{self.get_my_device_name()}') before removing '{client_name}'?")
-                reassign = reassign_dialog.get_input()
-                if reassign is None: return
-                if reassign:
-                    if not my_id:
-                         self.show_error("Cannot reassign tunnels, this device's ID is not yet known. Wait for Syncthing.")
-                         return
-                    logging.info(f"Reassigning {len(assigned_tunnels)} tunnels from {client_id} to {my_id}.")
-                    for tunnel in assigned_tunnels:
-                        tunnel['assigned_client_id'] = my_id
-                        self.config_manager.update_object(tunnel['id'], tunnel)
-                    self.refresh_dashboard()
             try:
-                 self.syncthing_manager.remove_device(client_id)
-                 logging.info(f"Successfully removed device {client_id} from Syncthing.")
+                self.remove_syncthing_device(client_id)
+                client_to_delete = None
+                for obj_id, obj_data in self.config_manager.get_all_objects_for_debug().items():
+                    if obj_data.get('type') == 'client' and obj_data.get('syncthing_id') == client_id:
+                        client_to_delete = obj_id; break
+                if client_to_delete: self.delete_object(client_to_delete)
+                if "SettingsView" in self.frames and self.frames["SettingsView"].winfo_exists():
+                    self.after(50, self.frames["SettingsView"]._load_devices_data) 
             except Exception as e:
-                 logging.error(f"Error removing device from Syncthing {client_id}: {e}", exc_info=True)
-                 self.show_error(f"Error communicating with Syncthing to remove device. It might reappear if other devices still have it. Check Syncthing logs.")
-            client_to_delete_config_id = None
-            for cfg_id, cfg_obj in self.config_manager.get_all_objects().items():
-                if cfg_obj.get('type') == 'client' and cfg_obj.get('syncthing_id') == client_id:
-                     client_to_delete_config_id = cfg_id
-                     break
-            if client_to_delete_config_id:
-                deleted_cfg = self.config_manager.delete_object(client_to_delete_config_id)
-                if deleted_cfg: logging.info(f"Deleted client config object {client_to_delete_config_id}")
-                else: logging.warning(f"Failed to delete client config object {client_to_delete_config_id} found for Syncthing ID {client_id}")
-            else:
-                 logging.warning(f"No client config object found for Syncthing ID {client_id} to delete.")
-            if "SettingsView" in self.frames:
-                self.frames["SettingsView"].enter()
-    # History View Passthroughs
-    def get_history_file_index(self): return self.config_manager.get_history_file_index()
-    def get_file_version_history(self, file_id): return self.config_manager.get_file_version_history(file_id)
-    def get_file_content_at_version(self, file_id, timestamp): return self.config_manager.get_file_content_at_version(file_id, timestamp)
+                logging.error(f"Failed to remove device {client_id}: {e}", exc_info=True)
+                self.show_error("Remove Failed", f"Could not remove device:\n{e}")
+        else: logging.info(f"Remove device {client_id} cancelled.")
+
+    # --- Added missing tunnel/server actions ---
+    def start_all_tunnels(self):
+        logging.info("Start All tunnels requested from UI.")
+        if not self.is_unlocked: return
+        self.tunnel_manager.start_all_tunnels()
+
+    def stop_all_tunnels(self):
+        logging.info("Stop All tunnels requested from UI.")
+        if not self.is_unlocked: return
+        dialog = ConfirmationDialog(self, title="Stop All Tunnels?", message="Stop all active tunnels managed by this device?")
+        if dialog.get_input(): self.tunnel_manager.stop_all_tunnels()
+        else: logging.info("Stop All tunnels cancelled.")
+
+    def view_tunnel_log(self, tunnel_id: str):
+        logging.info(f"View log requested for tunnel: {tunnel_id}")
+        if not self.is_unlocked: return
+        tunnel = self.get_object_by_id(tunnel_id)
+        tunnel_name = tunnel.get('hostname', tunnel_id) if tunnel else tunnel_id
+        log_content = self.get_tunnel_log(tunnel_id)
+        LogViewerDialog(self, log_content=log_content, title=f"Logs: {tunnel_name}")
+
+    def edit_tunnel(self, tunnel_id: str):
+        logging.info(f"Edit tunnel requested: {tunnel_id}")
+        if not self.is_unlocked: return
+        initial_data = self.get_object_by_id(tunnel_id)
+        if not initial_data: self.show_error("Error", f"Could not find tunnel: {tunnel_id}"); return
+        dialog = TunnelDialog(self, controller=self, title="Edit Tunnel", initial_data=initial_data)
+        result = dialog.get_input()
+        if result:
+            try: self.save_object(tunnel_id, result); self.refresh_dashboard()
+            except Exception as e: self.show_error("Save Failed", f"Could not update tunnel:\n{e}")
+        else: logging.info(f"Edit tunnel {tunnel_id} cancelled.")
+
+    def delete_tunnel(self, tunnel_id: str):
+        logging.info(f"Delete tunnel requested: {tunnel_id}")
+        if not self.is_unlocked: return
+        tunnel = self.get_object_by_id(tunnel_id); tunnel_name = tunnel.get('hostname', tunnel_id) if tunnel else tunnel_id
+        dialog = ConfirmationDialog(self, title="Delete Tunnel?", message=f"Delete tunnel '{tunnel_name}'?")
+        if dialog.get_input():
+            try:
+                statuses = self.get_tunnel_statuses()
+                if statuses.get(tunnel_id, {}).get('status') == 'running': self.stop_tunnel(tunnel_id)
+                self.delete_object(tunnel_id); self.refresh_dashboard()
+            except Exception as e: self.show_error("Delete Failed", f"Could not delete tunnel:\n{e}")
+        else: logging.info(f"Delete tunnel {tunnel_id} cancelled.")
+
+    def edit_server(self, server_id: str):
+        logging.info(f"Edit server requested: {server_id}")
+        if not self.is_unlocked: return
+        initial_data = self.get_object_by_id(server_id)
+        if not initial_data: self.show_error("Error", f"Could not find server: {server_id}"); return
+        
+        dialog = ServerDialog(self, controller=self, title="Edit Server", initial_data=initial_data)
+        result = dialog.get_input()
+        if result:
+            try:
+                self.save_object(server_id, result)
+                if "ServersView" in self.frames and self.frames["ServersView"].winfo_exists(): self.after(50, self.frames["ServersView"].load_servers)
+            except Exception as e: self.show_error("Save Failed", f"Could not update server:\n{e}")
+        else: logging.info(f"Edit server {server_id} cancelled.")
+
+    def delete_server(self, server_id: str):
+        logging.info(f"Delete server requested: {server_id}")
+        if not self.is_unlocked: return
+        server = self.get_object_by_id(server_id); server_name = server.get('name', server_id) if server else server_id
+        tunnels_using_server = [t for t in self.get_tunnels() if t.get('server_id') == server_id]
+        if tunnels_using_server:
+            tunnel_names = [t.get('hostname', t['id']) for t in tunnels_using_server]
+            self.show_error("Cannot Delete Server", f"Server '{server_name}' is used by tunnels:\n- {', '.join(tunnel_names)}\nDelete/reassign tunnels first.")
+            return
+        dialog = ConfirmationDialog(self, title="Delete Server?", message=f"Delete server '{server_name}'?")
+        if dialog.get_input():
+            try:
+                self.delete_object(server_id)
+                if "ServersView" in self.frames and self.frames["ServersView"].winfo_exists(): self.after(50, self.frames["ServersView"].load_servers)
+            except Exception as e: self.show_error("Delete Failed", f"Could not delete server:\n{e}")
+        else: logging.info(f"Delete server {server_id} cancelled.")
+
+
+    def add_new_tunnel(self):
+        """Shows the TunnelDialog to add a new tunnel."""
+        logging.info("Add new tunnel requested.")
+        if not self.is_unlocked: return 
+
+        dialog = TunnelDialog(self, controller=self, title="Add New Tunnel")
+        result = dialog.get_input() 
+
+        if result: 
+            try:
+                new_id = self.add_object("tunnel", result)
+                logging.info(f"New tunnel added with ID: {new_id}")
+                self.refresh_dashboard()
+            except Exception as e:
+                logging.error(f"Failed to save new tunnel: {e}", exc_info=True)
+                self.show_error("Save Failed", f"Could not save the new tunnel:\n{e}")
+        else:
+            logging.info("Add new tunnel cancelled.")
+
+    def add_new_server(self):
+        """Shows the ServerDialog to add a new server."""
+        logging.info("Add new server requested.")
+        if not self.is_unlocked: return
+
+        dialog = ServerDialog(self, controller=self, title="Add New Server", initial_data=None)
+        result = dialog.get_input()
+
+        if result:
+            try:
+                new_id = self.add_object("server", result)
+                logging.info(f"New server added with ID: {new_id}")
+                if "ServersView" in self.frames and self.frames["ServersView"].winfo_exists():
+                    self.after(50, self.frames["ServersView"].load_servers)
+            except Exception as e:
+                logging.error(f"Failed to save new server: {e}", exc_info=True)
+                self.show_error("Save Failed", f"Could not save the new server:\n{e}")
+        else:
+            logging.info("Add new server cancelled.")
+
+    def add_new_device(self):
+        """Shows the Syncthing Invite dialog."""
+        logging.info("Add new device requested.")
+        if not self.is_unlocked: return
+
+        invite_string = self.generate_syncthing_invite()
+        if invite_string:
+            InviteDialog(self, invite_string=invite_string)
+        else:
+            self.show_error("Error Generating Invite",
+                            "Could not generate Syncthing invite.\n"
+                            "Please ensure Syncthing is running and initialized (check Debug view).")
+            

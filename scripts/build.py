@@ -160,11 +160,14 @@ if __name__ == '__main__':
     logging.info(f"Project Root determined as: {project_root}")
 
     # --- Construct source paths relative to project root ---
-    # These paths are used for finding files locally AND for --add-data source paths
     syncthing_src_path_rel = os.path.join('resources', 'syncthing')
     images_src_path_rel = os.path.join('resources', 'images')
     main_script_path_rel = os.path.join('src', 'main.py')
     icon_path_rel = os.path.join(images_src_path_rel, 'nydusnet.ico')
+    
+    # --- *** UPDATED PATH *** ---
+    server_setup_path_rel = os.path.join('resources', 'server-setup') # Path relative to project root
+    # --- *** END UPDATE *** ---
 
     # --- Construct absolute paths needed by PyInstaller ---
     main_script_abs = os.path.join(project_root, main_script_path_rel)
@@ -173,14 +176,16 @@ if __name__ == '__main__':
     # --- Verify essential source files/dirs exist before proceeding ---
     if not os.path.isfile(main_script_abs):
         logging.error(f"Main script not found at {main_script_abs}. Aborting build.")
-        sys.exit(1) # Exit script with error code
+        sys.exit(1)
     if not os.path.isdir(os.path.join(project_root, images_src_path_rel)):
          logging.warning(f"Images source directory not found at {os.path.join(project_root, images_src_path_rel)}. Icons might be missing.")
-         # Allow build to continue, but log warning
     if not os.path.isfile(icon_abs):
          logging.warning(f"Application icon not found at {icon_abs}. Default icon will be used.")
-         # Allow build to continue
 
+    # --- *** UPDATE DIRECTORY CHECK *** ---
+    if not os.path.isdir(os.path.join(project_root, server_setup_path_rel)):
+        logging.warning(f"Server setup template directory not found at {os.path.join(project_root, server_setup_path_rel)}. Provisioning might fail.")
+    # --- *** END UPDATE *** ---
 
     # --- Read Syncthing version ---
     syncthing_version = get_config_value('syncthing_version')
@@ -194,10 +199,7 @@ if __name__ == '__main__':
     # --- Syncthing Download/Extraction Successful ---
     else:
         # --- Define PyInstaller arguments ---
-        # Paths for --add-data should be relative to the CWD where pyinstaller runs (project root)
-        # Destination paths are relative within the bundle.
-        # Use os.pathsep for --add-data separator (';' on Win, ':' on Unix)
-        add_data_sep = os.pathsep
+        add_data_sep = os.pathsep # Use os-specific separator
 
         pyinstaller_args = [
             main_script_abs, # Use absolute path to main script
@@ -206,11 +208,17 @@ if __name__ == '__main__':
             '--windowed', # No console window
             '--noconfirm', # Overwrite previous builds without asking
             '--clean', # Clean cache before build
+            
             # --- Add Syncthing data ---
-            # Source path relative to CWD, Destination relative to bundle root
             '--add-data', f'{syncthing_src_path_rel}{add_data_sep}resources/syncthing',
+            
             # --- Add Image data ---
             '--add-data', f'{images_src_path_rel}{add_data_sep}resources/images',
+
+            # --- *** UPDATE TEMPLATE BUNDLING *** ---
+            '--add-data', f'{server_setup_path_rel}{add_data_sep}resources/server-setup',
+            # --- *** END UPDATE *** ---
+
             # --- Add Icon ---
              '--icon', icon_abs # Use absolute path for icon
         ]
@@ -226,15 +234,6 @@ if __name__ == '__main__':
             # --- Run PyInstaller ---
             PyInstaller.__main__.run(pyinstaller_args)
             logging.info("PyInstaller build complete.")
-
-            # --- Optional: Move output ---
-            # output_dir = os.path.join(project_root, 'dist') # Default PyInstaller output
-            # final_exe_name = 'NydusNet.exe'
-            # final_exe_path = os.path.join(output_dir, final_exe_name)
-            # if os.path.exists(final_exe_path):
-            #      logging.info(f"Build successful. Executable created at: {final_exe_path}")
-            # else:
-            #      logging.error("Build finished but final executable was not found!")
 
         except SystemExit as e:
              # PyInstaller often uses SystemExit on completion/error
