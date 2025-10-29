@@ -3,13 +3,13 @@ name: Build and Release ⚙️🚀
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*' # Trigger only on version tags (e.g., v1.0.0)
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: write # Needed to create releases
 
     steps:
       - name: Checkout code 💻
@@ -21,42 +21,55 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies ✨
-        run: pip install .
+        run: pip install . # Installs from pyproject.toml
 
       - name: Install Inno Setup 🛠️
         run: |
           choco install innosetup
+          # Add Inno Setup to the PATH
           echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: pwsh
 
       - name: Run build script 🏗️
-        run: python scripts/build.py
-      
-      # --- New Debug Step ---
+        run: python scripts/build.py # Runs PyInstaller
+
+      # Debug step (kept from original release file)
       - name: List files for debugging 🔎
         run: |
           ls -R dist
           ls -R resources
+          ls -R Output
         shell: bash
-      # --- End of New Debug Step ---
 
-      - name: Create Installer 🎁
-        run: iscc ./scripts/create_installer.iss
+      - name: Create Installer 📦
+        run: iscc ./scripts/create_installer.iss # Runs Inno Setup
+
+      # --- SYNCED STEP: Added from build-and-package.yml ---
+      # Upload the raw PyInstaller output as an artifact for debugging
+      - name: Upload application artifact 📤
+        uses: actions/upload-artifact@v4
+        with:
+          name: nydusnet-app-${{ github.ref_name }} # Include tag name for clarity
+          path: dist/
+      # --- END SYNCED STEP ---
 
       - name: Create Release 📨
         id: create_release
         uses: ncipollo/release-action@v1
         with:
+          # Use the tag that triggered the workflow
           tag: ${{ github.ref_name }}
+          # Create a release name based on the tag
           name: Release ${{ github.ref_name }}
+          # Set draft=false and prerelease=false for automatic publishing
           draft: false
           prerelease: false
+          # Upload only the final installer from the Output directory to the release assets
           artifacts: "Output/*.exe"
+          # Basic release body (can be customized further)
           body: |
             ## NydusNet Release ${{ github.ref_name }}
-            
+
             This is an automated release of the NydusNet Windows installer.
-            
-            ### Changes
-            - ...
-            - ...
+
+            *(Add release notes here or link to changelog)*

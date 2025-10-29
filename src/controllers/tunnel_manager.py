@@ -114,7 +114,6 @@ class TunnelManager:
             except Exception: pass
             logging.debug(f"Stream {stream_name} for tunnel {tunnel_id} closed.")
 
-    # --- *** REVISED start_tunnel (Ensure CREATE_NEW_PROCESS_GROUP) *** ---
     def start_tunnel(self, tunnel_id: str) -> tuple[bool, str]:
         with self._lock:
             if tunnel_id in self.active_tunnels:
@@ -160,9 +159,14 @@ class TunnelManager:
                 '-o', "ExitOnForwardFailure=yes",
                 '-o', "StrictHostKeyChecking=no",
                 '-o', "UserKnownHostsFile=nul",
-                '-N',
+                # '-N' IS REMOVED
                 '-R', f"{tunnel_config['remote_port']}:{tunnel_config['local_destination']}",
-                f"{tunnel_user}@{server_config['ip_address']}"
+                f"{tunnel_user}@{server_config['ip_address']}",
+                # --- *** THIS IS THE FIX *** ---
+                # Send the hostname and port as the command.
+                # This populates $SSH_ORIGINAL_COMMAND on the server.
+                f"{tunnel_config['hostname']} {tunnel_config['remote_port']}"
+                # --- *** END FIX *** ---
             ]
 
             logging.info(f"Starting tunnel '{tunnel_config['hostname']}' (ID: {tunnel_id})")
@@ -174,7 +178,6 @@ class TunnelManager:
                      startupinfo = subprocess.STARTUPINFO()
                      startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                      startupinfo.wShowWindow = subprocess.SW_HIDE
-                     # --- *** ENSURE This flag is set for GenerateConsoleCtrlEvent *** ---
                      creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
                 
                 preexec_fn = os.setsid if os.name != 'nt' else None
@@ -187,7 +190,7 @@ class TunnelManager:
                     encoding='utf-8',
                     errors='replace',
                     startupinfo=startupinfo,
-                    creationflags=creationflags, # Apply flags
+                    creationflags=creationflags,
                     preexec_fn=preexec_fn
                 )
                 
@@ -209,7 +212,7 @@ class TunnelManager:
             except Exception as e:
                 msg = f"An unexpected error occurred while starting the tunnel: {e}"; logging.error(msg, exc_info=True)
                 self.active_tunnels.pop(tunnel_id, None); return False, msg
-
+            
     # --- *** REVISED stop_tunnel (Use GenerateConsoleCtrlEvent) *** ---
     def stop_tunnel(self, tunnel_id: str, refresh_ui: bool = True):
         """Stops a specific tunnel process, trying GenerateConsoleCtrlEvent first on Windows."""

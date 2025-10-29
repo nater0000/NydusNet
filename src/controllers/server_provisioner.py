@@ -1,13 +1,13 @@
 import logging
 import os
 import tempfile
-import re # Added for regex checks
-import time # Added for sleeps
-import sys # Added for sys._MEIPASS
+import re
+import time
+import sys
 from fabric import Connection
 from invoke.exceptions import UnexpectedExit, CommandTimedOut
 from io import BytesIO
-from jinja2 import Environment, FileSystemLoader # Added for templating
+from jinja2 import Environment, FileSystemLoader
 
 class ServerProvisioner:
     """
@@ -26,9 +26,9 @@ class ServerProvisioner:
             certbot_email (str): Email address for Let's Encrypt registration.
         """
         self.host = host
-        self.admin_user = admin_user # Changed from 'user' for clarity
-        self.admin_password = admin_password # Changed from 'password'
-        self.tunnel_user_public_key_string = tunnel_user_public_key_string # Renamed
+        self.admin_user = admin_user
+        self.admin_password = admin_password
+        self.tunnel_user_public_key_string = tunnel_user_public_key_string
         self.certbot_email = certbot_email
         self.log_output = []
         self.tunnel_user = "tunnel" # The restricted user for tunnels
@@ -79,7 +79,7 @@ class ServerProvisioner:
                 # Run setup steps sequentially, checking return values
                 if not self._install_packages(c): return False, self.log_output
                 if not self._ensure_tunnel_user_exists(c): return False, self.log_output
-                if not self._deploy_tunnel_user_key(c): return False, self.log_output
+                if not self._deploy_tunnel_user_key(c): return False, self.log_output # Uses SFTP version
                 if not self._deploy_setup_tunnel_script(c): return False, self.log_output
                 if not self._grant_sudo_permissions(c): return False, self.log_output
                 if not self._create_webroot(c): return False, self.log_output
@@ -99,11 +99,14 @@ class ServerProvisioner:
         self._log("Updating package cache and installing required packages...")
         packages = [
             "nginx", "certbot", "python3-certbot-nginx",
-            "fail2ban", "ufw", "lsof" # Added lsof for port checks
+            "fail2ban", "ufw", "lsof"
         ]
+        
+        apt_command = "DEBIAN_FRONTEND=noninteractive apt-get -y "
+        
         try:
             # Run update and install in one command
-            c.sudo("apt-get update && apt-get install -y " + " ".join(packages), hide=True)
+            c.sudo(f"{apt_command} update && {apt_command} install {' '.join(packages)}", hide=True)
             self._log("Packages installed successfully.")
             return True
         except UnexpectedExit as e:
@@ -129,108 +132,95 @@ class ServerProvisioner:
                 return False
             
     def _deploy_tunnel_user_key(self, c: Connection) -> bool:
-        """Installs the public key to the tunnel user's authorized_keys file with command restriction."""
-        self._log(f"Configuring authorized key for '{self.tunnel_user}'...")
-        authorized_keys_path = f"/home/{self.tunnel_user}/.ssh/authorized_keys"
+        """
+        Installs the public key using Fabric's SFTP methods, appending if necessary
+        and preventing duplicates.
+        """
+        self._log(f"Configuring authorized key for '{self.tunnel_user}' using SFTP...")
         ssh_dir_path = f"/home/{self.tunnel_user}/.ssh"
+        authorized_keys_path = f"{ssh_dir_path}/authorized_keys"
 
-        key_options = f'command="/usr/local/bin/setup_tunnel.sh; sleep infinity",no-agent-forwarding,no-X11-forwarding,no-pty'
-        # Ensure key string has no leading/trailing whitespace just in case
-        key_line_to_check = f'{key_options} {self.tunnel_user_public_key_string.strip()}'
-        # Ensure the line written *ends* with a newline for consistency
-        key_line_to_write = key_line_to_check + "\n"
-
+        key_options = 'command="/usr/local/bin/setup_tunnel.sh; sleep infinity",no-agent-forwarding,no-X11-forwarding,no-pty'
+        # Ensure key string has no leading/trailing whitespace
+        key_line_to_add = f'{key_options} {self.tunnel_user_public_key_string.strip()}'
 
         try:
-            # Step 1 & 2 (Unchanged)
+            # Step 1: Ensure .ssh directory exists with correct permissions and ownership
             self._log("Step 1: Ensuring .ssh directory exists...")
             c.sudo(f'mkdir -p {ssh_dir_path}', user=self.tunnel_user, hide=True)
-            self._log("Step 1: Directory ensured.")
-            self._log("Step 2: Setting permissions on .ssh directory...")
+            c.sudo(f'chown {self.tunnel_user}:{self.tunnel_user} {ssh_dir_path}', hide=True)
             c.sudo(f'chmod 700 {ssh_dir_path}', user=self.tunnel_user, hide=True)
-            self._log("Step 2: Directory permissions set (700).")
+            self._log("Step 1: Directory ensured with owner/permissions.")
 
-            # --- Step 3: Check if key already exists (via SFTP) ---
-            self._log(f"Step 3: Checking for existing key line in {authorized_keys_path} via SFTP...")
-            key_found = False
+            # Step 2: Read existing content using SFTP (c.get)
+            self._log(f"Step 2: Attempting to read existing {authorized_keys_path} via SFTP...")
+            existing_content = ""
+            key_already_present = False
+            file_exists = False
             try:
-                # Use BytesIO to simulate a file for get()
-                file_obj = BytesIO()
-                # Use c.get() to download the file content
-                c.get(authorized_keys_path, file_obj)
-                # Decode content (assuming UTF-8, adjust if needed)
-                file_content = file_obj.getvalue().decode('utf-8', errors='ignore')
-                file_obj.close() # Close the BytesIO object
-
-                # Check if the exact line exists in the content
-                # Split lines and strip any trailing whitespace for comparison
-                lines_in_file = [line.strip() for line in file_content.splitlines()]
-                if key_line_to_check in lines_in_file:
-                    key_found = True
-                    self._log("Step 3: Exact key line found via SFTP read.")
-                else:
-                    self._log("Step 3: Key line not found via SFTP read.")
-
+                with BytesIO() as file_obj:
+                    c.get(authorized_keys_path, file_obj)
+                    existing_content = file_obj.getvalue().decode('utf-8', errors='ignore')
+                    file_exists = True
+                    self._log("Step 2a: Existing file read successfully.")
+                    # Check if the exact line (ignoring leading/trailing whitespace) exists
+                    lines_in_file = [line.strip() for line in existing_content.splitlines()]
+                    if key_line_to_add in lines_in_file:
+                        key_already_present = True
+                        self._log("Step 2b: Key already present in the file.")
+                    else:
+                        self._log("Step 2b: Key not found in the file.")
             except FileNotFoundError:
-                self._log(f"Step 3: {authorized_keys_path} not found via SFTP (will create).")
-                key_found = False # File doesn't exist, so key isn't there
-            except Exception as sftp_e:
-                 self._log(f"❌ Step 3: Error reading {authorized_keys_path} via SFTP: {sftp_e}")
-                 # Decide how to handle SFTP errors - fail safe or assume not found?
-                 # Let's assume not found and try to write, but log the error.
-                 logging.error(f"SFTP read error for {authorized_keys_path}", exc_info=True)
-                 key_found = False
-                 self._log("Step 3: Proceeding assuming key not found due to SFTP error.")
-            # --- End SFTP Check ---
+                self._log(f"Step 2a: {authorized_keys_path} not found. Will create.")
+                file_exists = False
+                key_already_present = False # Can't be present if file doesn't exist
+            except Exception as sftp_get_e:
+                self._log(f"❌ Step 2a: Error reading {authorized_keys_path} via SFTP: {sftp_get_e}")
+                # Treat as if file doesn't exist or key isn't present to proceed with write attempt
+                file_exists = False
+                key_already_present = False
 
+            # Step 3: Write content using SFTP (c.put) only if key is not present
+            if not key_already_present:
+                self._log("Step 3: Preparing content to write/append...")
+                content_to_write = ""
+                if file_exists and existing_content:
+                    # Ensure existing content ends with a newline before appending
+                    if not existing_content.endswith('\n'):
+                        existing_content += '\n'
+                    content_to_write = existing_content + key_line_to_add + '\n'
+                    self._log("Step 3a: Appending new key to existing content.")
+                else:
+                    # File didn't exist or was empty, just write the new key line
+                    content_to_write = key_line_to_add + '\n'
+                    self._log("Step 3a: Creating new file content with the key.")
 
-            if key_found:
-                # --- Key Found Path ---
-                self._log("Step 3a: Skipping write, key already present.")
-                # Proceed to final permission checks
+                # Use BytesIO to upload the content
+                with BytesIO(content_to_write.encode('utf-8')) as key_file_obj:
+                    self._log(f"Step 3b: Uploading content to {authorized_keys_path} via SFTP...")
+                    c.put(key_file_obj, authorized_keys_path)
+                    self._log("Step 3c: Upload finished.")
 
-            else:
-                # --- Key Not Found / SFTP Error Path ---
-                self._log("Step 3b: Installing/Overwriting authorized_keys...")
-                # Use SFTP put for potentially more reliable writing than echo | tee
-                # Create a BytesIO object with the line *including newline*
-                key_file_obj = BytesIO(key_line_to_write.encode('utf-8'))
-
-                self._log(f"Step 3c: Uploading key line to {authorized_keys_path} via SFTP...")
-                # Upload the content using c.put()
-                c.put(key_file_obj, authorized_keys_path)
-                key_file_obj.close()
-                self._log("Step 3d: Upload finished.")
-
-                # *** Important: `c.put` uses the admin user, need to set owner/perms AFTER ***
-                self._log("Step 3e: Setting owner/group for uploaded key file...")
+                # SFTP put runs as the admin user, so ownership must be set afterwards
+                self._log("Step 3d: Setting owner after SFTP upload...")
                 c.sudo(f'chown {self.tunnel_user}:{self.tunnel_user} {authorized_keys_path}', hide=True)
-                self._log("Step 3f: Owner/group set.")
+                self._log("Step 3e: Owner set.")
+            else:
+                self._log("Step 3: Skipping write, key already present.")
 
-                # Permissions will be set in Step 4
-
-                self._log("Authorized key configured successfully.")
-
-
-            # Step 4 & 5 (Set permissions and ownership - crucial after SFTP put)
+            # Step 4: Ensure final permissions (always run this)
             self._log(f"Step 4: Setting final permissions on {authorized_keys_path}...")
-            # Set permissions as the tunnel user if possible, otherwise admin
-            c.sudo(f'chmod 600 {authorized_keys_path}', user=self.tunnel_user, hide=True, timeout=5)
-            self._log("Step 4: File permissions set (600).")
+            c.sudo(f'chmod 600 {authorized_keys_path}', user=self.tunnel_user, hide=True)
+            self._log("Step 4: Permissions set (600).")
 
-            self._log(f"Step 5: Ensuring ownership of {ssh_dir_path} and contents...")
-            c.sudo(f'chown -R {self.tunnel_user}:{self.tunnel_user} {ssh_dir_path}', hide=True, timeout=5)
-            self._log("Step 5: Ownership ensured.")
-
-            self._log("✅ Authorized key configuration completed.")
+            self._log("✅ Authorized key configuration completed using SFTP.")
             return True
 
-        # --- Update main exception handler ---
-        except CommandTimedOut as e: # Catch timeouts from sudo commands
+        except CommandTimedOut as e:
             self._log(f"❌ Command timed out during key configuration: {e.command}")
             logging.error("Timeout during key deployment", exc_info=True)
             return False
-        except Exception as e: # Catch other errors like SFTP issues not caught above
+        except Exception as e: # Catch other potential errors
             self._log(f"❌ Failed during authorized key configuration: {e}")
             logging.error("Exception during key deployment", exc_info=True)
             return False
@@ -245,10 +235,11 @@ class ServerProvisioner:
             template = self.jinja_env.get_template('setup_tunnel.sh.j2')
             rendered_content = template.render(certbot_email=self.certbot_email)
 
-            # Write rendered content to a temporary file
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8') as temp_file:
+            # --- *** Ensure Unix line endings *** ---
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', newline='\n') as temp_file:
                 temp_file.write(rendered_content)
                 local_temp_path = temp_file.name
+            # --- *** END *** ---
 
             # Upload the rendered file
             c.put(local_temp_path, remote=remote_path) # Upload first

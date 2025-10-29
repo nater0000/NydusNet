@@ -799,8 +799,11 @@ class TunnelDialog(BaseDialog):
 
         # --- Handle auto-start list ---
         my_device_id = self.controller.get_my_device_id()
-        # Get existing list, default to empty list if not present
-        auto_start_list = self.initial_data.get("auto_start_on_device_ids", [])
+        
+        # --- *** THE FIX: Make a .copy() of the list *** ---
+        # Get existing list, but make a new copy of it to prevent corruption
+        auto_start_list = self.initial_data.get("auto_start_on_device_ids", []).copy()
+        # --- *** END FIX *** ---
         
         if auto_start: # User wants it on *for this device*
             if my_device_id not in auto_start_list:
