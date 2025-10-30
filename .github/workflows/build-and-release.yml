@@ -33,16 +33,16 @@ jobs:
       - name: Run build script 🏗️
         run: python scripts/build.py # Runs PyInstaller
 
-      # Debug step (kept from original release file)
+      - name: Create Installer 📦
+        run: iscc ./scripts/create_installer.iss # Runs Inno Setup
+
+      # Debug step (Moved to after 'Create Installer')
       - name: List files for debugging 🔎
         run: |
           ls -R dist
           ls -R resources
           ls -R Output
         shell: bash
-
-      - name: Create Installer 📦
-        run: iscc ./scripts/create_installer.iss # Runs Inno Setup
 
       # --- SYNCED STEP: Added from build-and-package.yml ---
       # Upload the raw PyInstaller output as an artifact for debugging
