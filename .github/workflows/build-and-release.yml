@@ -65,4 +65,4 @@ jobs:
           # Upload only the final installer from the Output directory to the release assets
           artifacts: "Output/*.exe, docs/*"
           # Append the tag-name to the changelog filename
-          bodyFile: "changelog-${{ github.ref_name }}.md"
+          bodyFile: "docs/changelog-${{ github.ref_name }}.md"
