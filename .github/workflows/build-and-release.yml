@@ -44,14 +44,12 @@ jobs:
           ls -R Output
         shell: bash
 
-      # --- SYNCED STEP: Added from build-and-package.yml ---
       # Upload the raw PyInstaller output as an artifact for debugging
       - name: Upload application artifact 📤
         uses: actions/upload-artifact@v4
         with:
           name: nydusnet-app-${{ github.ref_name }} # Include tag name for clarity
           path: dist/
-      # --- END SYNCED STEP ---
 
       - name: Create Release 📨
         id: create_release
@@ -65,11 +63,6 @@ jobs:
           draft: false
           prerelease: false
           # Upload only the final installer from the Output directory to the release assets
-          artifacts: "Output/*.exe"
-          # Basic release body (can be customized further)
-          body: |
-            ## NydusNet Release ${{ github.ref_name }}
-
-            This is an automated release of the NydusNet Windows installer.
-
-            *(Add release notes here or link to changelog)*
+          artifacts: "Output/*.exe, docs/*"
+          # Append the tag-name to the changelog filename
+          bodyFile: "changelog-${{ github.ref_name }}.md"

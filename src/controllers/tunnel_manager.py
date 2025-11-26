@@ -159,6 +159,7 @@ class TunnelManager:
                 '-o', "ExitOnForwardFailure=yes",
                 '-o', "StrictHostKeyChecking=no",
                 '-o', "UserKnownHostsFile=nul",
+                '-4',
                 # '-N' IS REMOVED
                 '-R', f"{tunnel_config['remote_port']}:{tunnel_config['local_destination']}",
                 f"{tunnel_user}@{server_config['ip_address']}",
@@ -175,10 +176,10 @@ class TunnelManager:
                 startupinfo = None
                 creationflags = 0
                 if os.name == 'nt':
-                     startupinfo = subprocess.STARTUPINFO()
-                     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                     startupinfo.wShowWindow = subprocess.SW_HIDE
-                     creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                    creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
                 
                 preexec_fn = os.setsid if os.name != 'nt' else None
 
