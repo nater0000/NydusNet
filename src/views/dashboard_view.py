@@ -248,8 +248,19 @@ class DashboardView(ctk.CTkFrame):
 
         hostname = tunnel.get('hostname', 'N/A')
         remote_port = tunnel.get('remote_port', 'N/A')
-        local_dest = tunnel.get('local_destination', 'N/A')
-        info_text = f"{hostname} (Port: {remote_port}) -> {local_dest}"
+        
+        # --- *** UPDATED DISPLAY LOGIC *** ---
+        route_type = tunnel.get('route_type', 'tunnel')
+        
+        if route_type == 'local':
+             # For local routes, show it points to the VPS itself
+             info_text = f"{hostname} -> VPS Service (Port {remote_port})"
+        else:
+             # Standard tunnel display
+             local_dest = tunnel.get('local_destination', 'N/A')
+             info_text = f"{hostname} (Port: {remote_port}) -> {local_dest}"
+        # --- *** END UPDATE *** ---
+
         info_label = ctk.CTkLabel(item_frame, text=info_text, font=ctk.CTkFont(weight="bold"), anchor="w")
         info_label.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
@@ -408,3 +419,4 @@ class DashboardView(ctk.CTkFrame):
         except Exception as e:
             logging.error(f"Error during status refresh: {e}", exc_info=True)
             self.after(500, self.sync_tunnel_list)
+            

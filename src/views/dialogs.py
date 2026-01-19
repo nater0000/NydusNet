@@ -157,8 +157,7 @@ class BaseDialog(ctk.CTkToplevel):
         self._center_window() # Center *after* all widgets are created
         self.wait_window(self)
         return self.result
-    
-# --- UnlockDialog Class (Original Structure) ---
+
 class UnlockDialog(BaseDialog):
     """Dialog for entering master password or setting it on first run."""
     def __init__(self, parent, first_run: bool = False, controller=None, title=None):
@@ -235,8 +234,6 @@ class UnlockDialog(BaseDialog):
         else:
             self._create_unlock_ui()
             self.after(100, lambda: self.entry1.focus_set() if self.winfo_exists() else None)
-
-        # Center window after widgets are created (BaseDialog already schedules this)
 
     def _toggle_password_visibility(self, entry, button):
         if not entry or not button: return
@@ -336,7 +333,6 @@ class UnlockDialog(BaseDialog):
              self.destroy() # Just close
 
 
-# --- LoadingDialog Class (Original Structure) ---
 class LoadingDialog(BaseDialog):
     """Modal dialog showing an indeterminate progress bar."""
     def __init__(self, parent, title="Loading..."):
@@ -654,13 +650,30 @@ class TunnelDialog(BaseDialog):
         form_frame.pack(fill="x", expand=True)
         form_frame.grid_columnconfigure(1, weight=1)
         
+        # --- NEW: Route Type Toggle ---
         row = 0
+        ctk.CTkLabel(form_frame, text="Route Type:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        
+        # Determine initial type
+        initial_type = self.initial_data.get("route_type", "tunnel")
+        self.route_type_var = ctk.StringVar(value=initial_type)
+        
+        self.type_switch = ctk.CTkSegmentedButton(
+            form_frame, 
+            values=["Tunnel to Device", "Local VPS Service"],
+            variable=self.route_type_var,
+            command=self._on_type_change
+        )
+        self.type_switch.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        self.type_switch.set("Local VPS Service" if initial_type == "local" else "Tunnel to Device")
+
+
+        row += 1
         ctk.CTkLabel(form_frame, text="Hostname:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
-        self.hostname_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'app.example.com' or 'nas'")
+        self.hostname_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'app.example.com'")
         self.hostname_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
-        # --- FIX: Apply tooltip using bind ---
         if self.tooltip:
-             tooltip_text = "The public-facing name for this tunnel (e.g., 'app.example.com')."
+             tooltip_text = "The public-facing domain name (e.g., 'sms.mydomain.com')."
              self.hostname_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
              self.hostname_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
@@ -671,43 +684,39 @@ class TunnelDialog(BaseDialog):
             self.server_menu.configure(values=["No servers configured"], state="disabled")
         self.server_menu.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
+        # --- Dynamic Label for Port ---
         row += 1
-        ctk.CTkLabel(form_frame, text="Remote Port:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
-        self.remote_port_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 10001 (must be unique on server)")
+        self.port_label = ctk.CTkLabel(form_frame, text="Remote Port:") # Will be updated by toggle
+        self.port_label.grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        
+        self.remote_port_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 8080 or 5000")
         self.remote_port_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
-        # --- FIX: Apply tooltip using bind ---
-        if self.tooltip:
-             tooltip_text = "The port the *server* will listen on. Must be unique for this server."
-             self.remote_port_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
-             self.remote_port_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
+        # --- Client Device (Hidden for Local) ---
         row += 1
-        ctk.CTkLabel(form_frame, text="Client Device:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
-        self.client_menu = ctk.CTkOptionMenu(form_frame, values=self.client_names)
+        self.client_label = ctk.CTkLabel(form_frame, text="Client Device:")
+        self.client_label.grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        
+        self.client_menu = ctk.CTkOptionMenu(form_frame, values=self.client_names, command=self._on_client_select)
         if not self.client_names:
              self.client_menu.configure(values=["No devices available"], state="disabled")
         self.client_menu.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
+        # --- Local Destination (Hidden for Local) ---
         row += 1
-        ctk.CTkLabel(form_frame, text="Local Destination:").grid(row=row, column=0, padx=10, pady=5, sticky="w")
-        self.local_dest_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'localhost:8080' or '192.168.1.10:80'")
+        self.local_dest_label = ctk.CTkLabel(form_frame, text="Local Destination:")
+        self.local_dest_label.grid(row=row, column=0, padx=10, pady=5, sticky="w")
+        
+        self.local_dest_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'localhost:8080'")
         self.local_dest_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
-        # --- FIX: Apply tooltip using bind ---
-        if self.tooltip:
-             tooltip_text = "The destination the *client device* will forward traffic to (e.g., 'localhost:3000')."
-             self.local_dest_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
-             self.local_dest_entry.bind("<Leave>", self.tooltip.schedule_hide)
 
+        # --- Auto Start ---
         row += 1
         self.auto_start_var = ctk.StringVar(value="on")
         self.auto_start_check = ctk.CTkCheckBox(form_frame, text="Auto-start on this device?",
                                                 variable=self.auto_start_var, onvalue="on", offvalue="off")
         self.auto_start_check.grid(row=row, column=1, padx=10, pady=10, sticky="w")
-        # --- FIX: Apply tooltip using bind ---
-        if self.tooltip:
-             tooltip_text = "If checked, this tunnel will try to start when the app launches on *this* device."
-             self.auto_start_check.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
-             self.auto_start_check.bind("<Leave>", self.tooltip.schedule_hide)
+
 
         # --- Load initial data ---
         self.hostname_entry.insert(0, self.initial_data.get("hostname", ""))
@@ -733,9 +742,9 @@ class TunnelDialog(BaseDialog):
              self.auto_start_var.set("on")
         else:
              self.auto_start_var.set("off")
-        # Disable checkbox if 'This Device' isn't the selected client
-        self._on_client_select(self.client_menu.get()) 
-        self.client_menu.configure(command=self._on_client_select) # Add command
+        
+        # Trigger UI update based on initial type
+        self._on_type_change(self.type_switch.get())
 
         # --- Button Frame ---
         button_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -751,12 +760,50 @@ class TunnelDialog(BaseDialog):
         self.hostname_entry.focus_set()
         self.bind("<Return>", self._on_ok)
 
+    def _on_type_change(self, value):
+        """Updates UI elements based on selected route type."""
+        is_local = (value == "Local VPS Service")
+        
+        if is_local:
+            # Local Route Mode
+            self.port_label.configure(text="App Port (VPS):")
+            if self.tooltip:
+                tooltip_text = "The port your service is listening on localhost (e.g., 5000)."
+                self.remote_port_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+            
+            # Hide Tunnel-specific fields
+            self.client_label.grid_remove()
+            self.client_menu.grid_remove()
+            self.local_dest_label.grid_remove()
+            self.local_dest_entry.grid_remove()
+            
+            # Auto-start logic changes for local: always enabled for "this" device to apply config?
+            # Or perhaps we treat "this device" as the controller for the local route.
+            self.auto_start_check.configure(state="normal") 
+
+        else:
+            # Tunnel Mode
+            self.port_label.configure(text="Remote Port:")
+            if self.tooltip:
+                 tooltip_text = "The port the *server* will listen on. Must be unique."
+                 self.remote_port_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+
+            # Show Tunnel-specific fields
+            self.client_label.grid()
+            self.client_menu.grid()
+            self.local_dest_label.grid()
+            self.local_dest_entry.grid()
+            
+            # Re-apply client select logic
+            self._on_client_select(self.client_menu.get())
+
     def _on_server_select(self, server_name: str):
-        """(Future) Could be used to check for port conflicts."""
         pass 
 
     def _on_client_select(self, client_name: str):
         """Enables/Disables the auto-start checkbox based on client selection."""
+        if self.route_type_var.get() == "local": return
+        
         selected_client_id = self.client_map.get(client_name)
         my_device_id = self.controller.get_my_device_id()
         
@@ -764,15 +811,15 @@ class TunnelDialog(BaseDialog):
              self.auto_start_check.configure(state="normal")
         else:
              self.auto_start_check.configure(state="disabled")
-             self.auto_start_var.set("off") # Uncheck if not this device
+             self.auto_start_var.set("off")
 
     def _on_ok(self, event=None):
         hostname = self.hostname_entry.get().strip()
         remote_port = self.remote_port_entry.get().strip()
-        local_dest = self.local_dest_entry.get().strip()
         server_name = self.server_menu.get()
-        client_name = self.client_menu.get()
         auto_start = self.auto_start_var.get() == "on"
+        
+        route_mode = "local" if self.type_switch.get() == "Local VPS Service" else "tunnel"
 
         # --- Validation ---
         if not hostname:
@@ -781,47 +828,59 @@ class TunnelDialog(BaseDialog):
         if not server_name or server_name == "No servers configured":
              ErrorDialog(self, title="Input Error", message="A server must be selected.")
              return
-        if not client_name or client_name == "No devices available":
-             ErrorDialog(self, title="Input Error", message="A client device must be selected.")
-             return
-        if not local_dest:
-             ErrorDialog(self, title="Input Error", message="Local Destination cannot be empty.")
-             return
-        if not remote_port.isdigit() or not (1024 < int(remote_port) < 65535):
-             ErrorDialog(self, title="Input Error", message="Remote Port must be a number between 1025 and 65534.")
+        if not remote_port.isdigit():
+             ErrorDialog(self, title="Input Error", message="Port must be a number.")
              return
         
         server_id = self.servers_map.get(server_name)
-        client_device_id = self.client_map.get(client_name)
-        if not server_id or not client_device_id:
-             ErrorDialog(self, title="Internal Error", message="Could not map server or client name to an ID.")
+        if not server_id:
+             ErrorDialog(self, title="Internal Error", message="Could not map server name to an ID.")
              return
+
+        # Prepare Result Dict
+        self.result = self.initial_data.copy()
+        
+        if route_mode == "tunnel":
+            local_dest = self.local_dest_entry.get().strip()
+            client_name = self.client_menu.get()
+            
+            if not client_name or client_name == "No devices available":
+                 ErrorDialog(self, title="Input Error", message="A client device must be selected.")
+                 return
+            if not local_dest:
+                 ErrorDialog(self, title="Input Error", message="Local Destination cannot be empty.")
+                 return
+            
+            client_device_id = self.client_map.get(client_name)
+            self.result.update({
+                "local_destination": local_dest,
+                "client_device_id": client_device_id,
+            })
+        else:
+            # Local Mode: Clear tunnel-specific fields to avoid confusion
+            self.result.update({
+                "local_destination": "",
+                "client_device_id": self.controller.get_my_device_id(), # Assign to self so we can control it
+            })
 
         # --- Handle auto-start list ---
         my_device_id = self.controller.get_my_device_id()
-        
-        # --- *** THE FIX: Make a .copy() of the list *** ---
-        # Get existing list, but make a new copy of it to prevent corruption
         auto_start_list = self.initial_data.get("auto_start_on_device_ids", []).copy()
-        # --- *** END FIX *** ---
         
-        if auto_start: # User wants it on *for this device*
+        if auto_start: 
             if my_device_id not in auto_start_list:
                  auto_start_list.append(my_device_id)
-        else: # User wants it off *for this device*
+        else: 
             if my_device_id in auto_start_list:
                  auto_start_list.remove(my_device_id)
 
-        # Merge new data with initial data (preserves ID, etc.)
-        self.result = self.initial_data.copy()
         self.result.update({
             "hostname": hostname,
             "server_id": server_id,
-            "remote_port": remote_port,
-            "client_device_id": client_device_id,
-            "local_destination": local_dest,
+            "remote_port": remote_port, # In local mode, this is the App Port
             "auto_start_on_device_ids": auto_start_list,
-            "obj_type": "tunnel" # Ensure obj_type is set
+            "obj_type": "tunnel",
+            "route_type": route_mode # New Field
         })
         
         self.grab_release()
@@ -953,3 +1012,4 @@ class ErrorDialog(BaseDialog):
         self.bind("<Escape>", self._on_ok)
         
         ok_button.focus_set()
+        

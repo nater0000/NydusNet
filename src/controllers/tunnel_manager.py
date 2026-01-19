@@ -151,26 +151,39 @@ class TunnelManager:
 
             tunnel_user = server_config.get('tunnel_user') or "tunnel"
 
+            # --- CHECK ROUTE TYPE ---
+            # If route_type is 'local', we skip the reverse forwarding logic (-R)
+            # This allows Nginx to proxy directly to a service running on the VPS localhost
+            route_type = tunnel_config.get('route_type', 'tunnel')
+            is_local_route = (route_type == 'local')
+
             command = [
                 self.ssh_executable,
                 '-v',
                 '-i', ssh_key_path,
                 '-o', "ServerAliveInterval=30",
-                '-o', "ExitOnForwardFailure=yes",
                 '-o', "StrictHostKeyChecking=no",
                 '-o', "UserKnownHostsFile=nul",
                 '-4',
-                # '-N' IS REMOVED
-                '-R', f"{tunnel_config['remote_port']}:{tunnel_config['local_destination']}",
-                f"{tunnel_user}@{server_config['ip_address']}",
-                # --- *** THIS IS THE FIX *** ---
-                # Send the hostname and port as the command.
-                # This populates $SSH_ORIGINAL_COMMAND on the server.
-                f"{tunnel_config['hostname']} {tunnel_config['remote_port']}"
-                # --- *** END FIX *** ---
             ]
 
-            logging.info(f"Starting tunnel '{tunnel_config['hostname']}' (ID: {tunnel_id})")
+            # Only add forwarding and exit-on-failure if it's a standard tunnel
+            if not is_local_route:
+                command.append('-o')
+                command.append("ExitOnForwardFailure=yes")
+                command.append('-R')
+                command.append(f"{tunnel_config['remote_port']}:{tunnel_config['local_destination']}")
+
+            command.append(f"{tunnel_user}@{server_config['ip_address']}")
+            
+            # The command to run on the server.
+            # Even for local routes, we run this to ensure Nginx is configured/reloaded
+            # to point to localhost:{remote_port}.
+            # The server-side 'authorized_keys' usually forces this command + 'sleep infinity',
+            # keeping the connection open for monitoring.
+            command.append(f"{tunnel_config['hostname']} {tunnel_config['remote_port']}")
+
+            logging.info(f"Starting {route_type} '{tunnel_config['hostname']}' (ID: {tunnel_id})")
             logging.debug(f"SSH command list: {command}")
             try:
                 startupinfo = None
@@ -198,7 +211,7 @@ class TunnelManager:
                 self.active_tunnels[tunnel_id] = process
 
                 self.tunnel_logs[tunnel_id] = deque(maxlen=500)
-                self.tunnel_logs[tunnel_id].append(f"--- Tunnel process starting... ---\n")
+                self.tunnel_logs[tunnel_id].append(f"--- {route_type.title()} process starting... ---\n")
 
                 threading.Thread(target=self._stream_reader, args=(process.stdout, tunnel_id, "stdout"), daemon=True).start()
                 threading.Thread(target=self._stream_reader, args=(process.stderr, tunnel_id, "stderr"), daemon=True).start()
@@ -206,7 +219,7 @@ class TunnelManager:
                 if hasattr(self.controller, 'after'):
                     self.controller.after(0, self.controller.refresh_dashboard)
 
-                return True, "Tunnel process started."
+                return True, "Process started."
             except FileNotFoundError:
                 msg = f"SSH executable not found at '{self.ssh_executable}'."; logging.error(msg)
                 self.active_tunnels.pop(tunnel_id, None); return False, msg
@@ -384,3 +397,4 @@ class TunnelManager:
             error_msg = self.tunnel_error_messages.get(tunnel_id)
             if error_msg: return f"--- Tunnel Exited with Error ---\n{error_msg}\n--- No further logs available ---"
             return "No logs available for this tunnel yet."
+        

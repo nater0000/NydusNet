@@ -1,13 +1,13 @@
 # **NydusNet 🛡️✨: Secure Reverse Tunnel Manager**
 
 <p align="center">
-  <a href="https://github.com/nater0000/nydusnet/releases/latest"><img src="https://img.shields.io/github/v/release/nater0000/nydusnet" alt="Latest Release"></a>
+  <a href="[https://github.com/nater0000/nydusnet/releases/latest](https://github.com/nater0000/nydusnet/releases/latest)"><img src="[https://img.shields.io/github/v/release/nater0000/nydusnet](https://img.shields.io/github/v/release/nater0000/nydusnet)" alt="Latest Release"></a>
   &nbsp;
-  <a href="https://github.com/nater0000/nydusnet/blob/main/LICENSE"><img src="https://img.shields.io/github/license/nater0000/nydusnet" alt="License"></a>
+  <a href="[https://github.com/nater0000/nydusnet/blob/main/LICENSE](https://github.com/nater0000/nydusnet/blob/main/LICENSE)"><img src="[https://img.shields.io/github/license/nater0000/nydusnet](https://img.shields.io/github/license/nater0000/nydusnet)" alt="License"></a>
   &nbsp;
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python Version"></a>
+  <a href="[https://www.python.org/downloads/](https://www.python.org/downloads/)"><img src="[https://img.shields.io/badge/python-3.10%2B-blue.svg](https://img.shields.io/badge/python-3.10%2B-blue.svg)" alt="Python Version"></a>
   &nbsp;
-  <a href="https://github.com/nater0000/nydusnet/actions"><img src="https://img.shields.io/github/actions/workflow/status/nater0000/nydusnet/build-and-package.yml?branch=main" alt="Build Status"></a>
+  <a href="[https://github.com/nater0000/nydusnet/actions](https://github.com/nater0000/nydusnet/actions)"><img src="[https://img.shields.io/github/actions/workflow/status/nater0000/nydusnet/build-and-package.yml?branch=main](https://img.shields.io/github/actions/workflow/status/nater0000/nydusnet/build-and-package.yml?branch=main)" alt="Build Status"></a>
 </p>
 
 NydusNet is a robust, multi-device reverse SSH tunnel management application for Windows. It provides a user-friendly GUI built with **Python** and **CustomTkinter** to securely expose local services to the internet via a remote VPS.
@@ -214,25 +214,44 @@ The ServerProvisioner uses **Fabric** to execute secure, idempotent setup on a r
 
 ### **Prerequisites**
 
-* **Python 3.10+** * **Git**
+* **Python 3.10+**
+* **Git**
 
 ### **Project Setup**
 
 1. **Clone the Repository**:
-```
+```bash
    git clone https://github.com/nater0000/nydusnet.git  
    cd nydusnet
 ```
-2. **Install Dependencies**:
-   * The project uses pyproject.toml for dependency management. Install in editable mode:
+
+2. **Initialize Virtual Environment**:
+   It is strongly recommended to use a virtual environment to manage dependencies.
+
+   * **Windows:**
+     ```powershell
+     python -m venv venv
+     .\venv\Scripts\activate
+     ```
+   * **macOS / Linux:**
+     ```bash
+     python3 -m venv venv
+     source venv/bin/activate
+     ```
+
+3. **Install Dependencies**:
+   The project uses `pyproject.toml` for dependency management. Install in editable mode:
+```bash
+   pip install -e .
 ```
-pip install -e .
-```
-3. **Run the Application**:
-```
+
+4. **Run the Application**:
+```bash
    python src/main.py
 ```
-4. **Building the Executable**: The build.py script uses **PyInstaller** to package the application, explicitly including resources (resources/syncthing, resources/server-setup, etc.) via the --add-data flag.
-```
+
+5. **Building the Executable**:
+   The `build.py` script uses **PyInstaller** to package the application, explicitly including resources (`resources/syncthing`, `resources/server-setup`, etc.) via the `--add-data` flag.
+```bash
    python scripts/build.py
 ```
