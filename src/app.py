@@ -600,8 +600,9 @@ class App(ctk.CTk):
                 self.syncthing_manager.start()
                 logging.info("Syncthing started successfully.")
             except Exception as e:
+                # Capture exception for the lambda to prevent NameError
                 logging.critical(f"Critical error starting Syncthing: {e}", exc_info=True)
-                self.after(0, lambda: self.show_error(f"Syncthing Startup Failed", f"Could not start Syncthing:\n{e}"))
+                self.after(0, lambda err=e: self.show_error(f"Syncthing Startup Failed", f"Could not start Syncthing:\n{err}"))
 
             logging.info("Attempting to start Tunnel Manager monitor...")
             try:

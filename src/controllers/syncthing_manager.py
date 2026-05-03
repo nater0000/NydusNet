@@ -5,6 +5,7 @@ import time
 import threading
 import xml.etree.ElementTree as ET
 import sys # <-- Added import
+import socket
 from syncthing import Syncthing, SyncthingError # Assuming syncthing2 library renamed to syncthing
 
 class SyncthingManager:
@@ -60,8 +61,35 @@ class SyncthingManager:
             # Raise specific error to be caught in app.py
             raise FileNotFoundError(f"Syncthing not found: {self.syncthing_exe_path}")
 
+        # --- Clean up any orphaned background processes holding the database lock ---
+        try:
+            if sys.platform == 'win32':
+                wmic_path = self.syncthing_exe_path.replace('\\', '\\\\')
+                subprocess.run(f'wmic process where "ExecutablePath=\'{wmic_path}\'" call terminate', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                subprocess.run(["pkill", "-f", self.syncthing_exe_path], capture_output=True)
+            time.sleep(1) # Give the OS a moment to release file locks
+        except Exception as e:
+            logging.debug(f"Zombie cleanup failed or skipped: {e}")
+
+        current_port = base_port
+
         for i in range(max_retries):
-            current_port = base_port + i
+            # --- Find a truly free port (dodging Windows Hyper-V reserved ranges and zombies) ---
+            port_found = False
+            while current_port < base_port + 200: # Scan ahead up to 200 ports
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    try:
+                        s.bind(('127.0.0.1', current_port))
+                        port_found = True
+                        break
+                    except OSError:
+                        logging.debug(f"Port {current_port} is in use or reserved by Windows. Skipping...")
+                        current_port += 1
+            
+            if not port_found:
+                 raise RuntimeError("Could not find any available ports for Syncthing.")
+
             # Syncthing config/data path within AppData
             config_path = os.path.join(self.app_data_path, "syncthing_config")
             log_path = os.path.join(config_path, "syncthing.log")
@@ -71,13 +99,15 @@ class SyncthingManager:
                 logging.error(f"Cannot create Syncthing config directory {config_path}: {e}")
                 raise RuntimeError(f"Cannot create Syncthing config directory: {e}") from e
 
-            # Command parts - quote paths with spaces
+            # Command parts
             command_parts = [
-                f'"{self.syncthing_exe_path}"',
-                 '--home', f'"{config_path}"', # Use --home for config/data dir
-                 '--gui-address', f'"127.0.0.1:{current_port}"',
+                self.syncthing_exe_path,
+                 '--home', config_path, # Use --home for config/data dir
+                 '--gui-address', f'127.0.0.1:{current_port}',
                  "--no-browser", # Prevent Syncthing from opening a browser
-                 '--logfile', f'"{log_path}"' # Log file within config dir
+                 "--no-restart", # Disable monitor process so we can catch crashes immediately
+                 "--no-upgrade", # Disable background updates from stalling the API
+                 '--logfile', log_path # Log file within config dir
             ]
 
             command_str = ' '.join(command_parts)
@@ -89,8 +119,8 @@ class SyncthingManager:
 
                 # Start the process
                 self.process = subprocess.Popen(
-                    command_str, shell=True, # shell=True needed due to quotes in command_str
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    command_parts, shell=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, # Discard stdout to prevent buffer lockups
                     text=True, encoding='utf-8', errors='replace', # Decode output as text
                     creationflags=creationflags
                 )
@@ -110,18 +140,32 @@ class SyncthingManager:
                         logging.warning(f"Error getting output from ended Syncthing process: {comm_e}")
 
                     logging.error(f"Syncthing exited immediately (code {exit_code}) on port {current_port}.")
+
+                    # Syncthing redirects fatal errors to the log file when --logfile is used
+                    if os.path.exists(log_path):
+                        try:
+                            with open(log_path, 'r', encoding='utf-8') as f:
+                                last_lines = "".join(f.readlines()[-5:])
+                                if last_lines:
+                                    logging.error(f"Syncthing log output before exit:\n{last_lines.strip()}")
+                                    stderr_data += f"\n{last_lines}" # Feed into the checks below
+                        except Exception as log_err:
+                            logging.warning(f"Could not read log file to determine crash reason: {log_err}")
+
                     if stdout_data: logging.error(f"Syncthing STDOUT:\n{stdout_data.strip()}")
                     if stderr_data: logging.error(f"Syncthing STDERR:\n{stderr_data.strip()}")
 
                     # Check stderr for common errors like port conflict
-                    if "address already in use" in stderr_data or "bind:" in stderr_data or "FATAL: Listen" in stderr_data:
+                    if "address already in use" in stderr_data or "bind:" in stderr_data or "FATAL: Listen" in stderr_data or "database is locked" in stderr_data.lower():
                         logging.warning(f"Port {current_port} is in use or Syncthing already running. Retrying...")
                         self.process = None # Clear process ref
+                        current_port += 1
                         continue # Try next port
                     else:
                         # Other immediate failure
                         logging.warning(f"Syncthing failed unexpectedly on port {current_port}. Retrying...")
                         self.process = None # Clear process ref
+                        current_port += 1
                         continue # Try next port
 
                 # If poll() is None, process is running
@@ -129,26 +173,35 @@ class SyncthingManager:
                 api_init_success = self._initialize_api_client(config_path, current_port) # Initialize API
 
                 if api_init_success:
-                    self.is_running = True
                     logging.info("Syncthing startup and API connection successful.")
                     return True # Successfully started and connected
                 else:
                      # API init failed, stop the process and retry port
                      logging.error("Syncthing process started but API initialization failed. Trying next port.")
                      if self.process and self.process.poll() is None:
-                         self.process.terminate()
-                         try: self.process.wait(timeout=2)
-                         except subprocess.TimeoutExpired: self.process.kill()
+                         try: 
+                             if sys.platform == 'win32':
+                                 subprocess.run(["taskkill", "/F", "/PID", str(self.process.pid), "/T"], check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                             else:
+                                 self.process.terminate()
+                                 self.process.wait(timeout=2)
+                         except Exception: pass
                      self.process = None
+                     current_port += 1
                      continue # Try next port
 
             except Exception as e:
                 logging.error(f"Failed to launch Syncthing on port {current_port}: {e}", exc_info=True)
                 # Ensure process is cleaned up if Popen failed partially
                 if self.process and self.process.poll() is None:
-                    try: self.process.kill()
+                    try:
+                        if sys.platform == 'win32':
+                            subprocess.run(["taskkill", "/F", "/PID", str(self.process.pid), "/T"], check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                        else:
+                            self.process.kill()
                     except Exception: pass
                 self.process = None
+                current_port += 1
                 continue # Try next port
 
         # Loop finished without success
@@ -174,9 +227,10 @@ class SyncthingManager:
                 raise FileNotFoundError("Syncthing config.xml was not created in time.")
 
             # Add delay before parsing, sometimes file exists but isn't fully written
-            time.sleep(0.5)
+            time.sleep(1.0)
 
             # Parse config to get API key
+            is_https = False
             try:
                 tree = ET.parse(config_xml_path)
                 api_key_node = tree.getroot().find('.//gui/apikey')
@@ -184,16 +238,24 @@ class SyncthingManager:
                     raise ValueError("API key not found or empty in config.xml")
                 self.api_key = api_key_node.text
                 logging.debug("API key retrieved from config.xml.")
+
+                # Check if TLS is enabled
+                gui_node = tree.getroot().find('.//gui')
+                if gui_node is not None and gui_node.get('tls') == 'true':
+                    is_https = True
+                    logging.debug("GUI TLS is enabled in config.xml. Using HTTPS.")
             except ET.ParseError as xml_err:
                 logging.error(f"Failed to parse config.xml: {xml_err}")
                 raise ValueError("Could not parse Syncthing config.xml.") from xml_err
 
             # Create the client first
-            self.api_client = Syncthing(self.api_key, host="127.0.0.1", port=port, is_https=False, timeout=5.0) # Use is_https=False for http, add timeout
+            self.api_client = Syncthing(self.api_key, host="127.0.0.1", port=port, is_https=is_https, timeout=5.0) # Add timeout
 
             # Poll for API connection
-            logging.info(f"Attempting to connect to Syncthing API at http://127.0.0.1:{port}...")
-            for i in range(10): # Try to connect for up to 10 seconds
+            protocol = "https" if is_https else "http"
+            logging.info(f"Attempting to connect to Syncthing API at {protocol}://127.0.0.1:{port}...")
+            max_api_retries = 60
+            for i in range(max_api_retries): # Wait up to 60s for DB migrations/defender scans
                 try:
                     status = self.api_client.system.status() # Poll status
                     self.my_device_id = status.get('myID')
@@ -202,6 +264,7 @@ class SyncthingManager:
                     logging.info(f"Syncthing API connected successfully. This device ID: {self.my_device_id}")
 
                     # --- Crucial callbacks and setup ---
+                    self.is_running = True
                     self.controller.on_syncthing_id_ready() # Notify App
                     self.create_initial_share() # Ensure shared folder exists
                     # --- End Crucial ---
@@ -209,13 +272,13 @@ class SyncthingManager:
                 except SyncthingError as api_err:
                     # Check for connection errors specifically
                     if "http request error" in str(api_err).lower() or "connection refused" in str(api_err).lower():
-                        logging.debug(f"Syncthing API not ready yet (attempt {i+1}/10). Retrying in 1 second...")
+                        logging.debug(f"Syncthing API not ready yet (attempt {i+1}/{max_api_retries}). Retrying in 1 second...")
                         time.sleep(1)
                     else:
                         logging.error(f"Unexpected Syncthing API error: {api_err}")
                         raise # It's a different API error, raise it
                 except ConnectionError as conn_err: # Catch lower-level connection errors
-                    logging.debug(f"Syncthing API connection failed (attempt {i+1}/10): {conn_err}. Retrying...")
+                    logging.debug(f"Syncthing API connection failed (attempt {i+1}/{max_api_retries}): {conn_err}. Retrying...")
                     time.sleep(1)
                 except Exception as e: # Catch any other errors during status check
                     logging.error(f"Unexpected error connecting to Syncthing API: {e}", exc_info=True)
@@ -235,21 +298,28 @@ class SyncthingManager:
 
     def stop(self):
         """Stops the Syncthing process if it's running."""
-        if self.process and self.process.poll() is None:
-            logging.info("Shutting down Syncthing process.")
+        if self.is_running and self.api_client:
+            logging.info("Shutting down Syncthing via API.")
             try:
-                self.process.terminate() # Ask nicely first
-                self.process.wait(timeout=5) # Wait up to 5 seconds
-                logging.info("Syncthing process terminated.")
-            except subprocess.TimeoutExpired:
-                logging.warning("Syncthing process did not terminate gracefully, killing.")
-                self.process.kill() # Force kill if necessary
-                try: self.process.wait(timeout=2) # Wait briefly after kill
-                except subprocess.TimeoutExpired: pass
+                self.api_client.system.shutdown()
+                if self.process:
+                    try: self.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired: pass
             except Exception as e:
-                 logging.error(f"Error stopping Syncthing process: {e}")
-        else:
-            logging.debug("Syncthing process already stopped or not started.")
+                logging.debug(f"Syncthing API shutdown failed or timed out: {e}")
+
+        if self.process and self.process.poll() is None:
+            logging.info("Forcing Syncthing process termination.")
+            try:
+                if sys.platform == 'win32':
+                    subprocess.run(["taskkill", "/F", "/PID", str(self.process.pid), "/T"], check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+                else:
+                    self.process.terminate() # Ask nicely first
+                    try: self.process.wait(timeout=2)
+                    except subprocess.TimeoutExpired: self.process.kill()
+                logging.info("Syncthing process terminated.")
+            except Exception as e:
+                 logging.error(f"Error stopping Syncthing process forcefully: {e}")
 
         self.process = None # Clear process reference
         self.is_running = False

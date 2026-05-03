@@ -1,7 +1,11 @@
 # ==============================================================================
 # STANDARD PYTHON TEMPLATE
 # ==============================================================================
-resources/syncthing/
+resources/syncthing/*
+!resources/syncthing/AUTHORS.TXT
+!resources/syncthing/README.TXT
+!resources/syncthing/LICENSE.TXT
+!resources/syncthing/syncthing.exe
 __pycache__/
 *.py[codz]
 *$py.class
@@ -100,7 +104,7 @@ id_rsa.pub
 
 # --- Syncthing Runtime ---
 # Ignores runtime config generated during local testing
-syncthing.exe
+/syncthing.exe
 syncthing-config/
 .stfolder/
 
