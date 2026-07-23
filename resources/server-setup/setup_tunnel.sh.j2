@@ -91,6 +91,7 @@ EOF
 
     # STAGE 2: Build extra service blocks (LiveKit / WebSocket / etc.)
     extra_blocks=""
+    extra_locations=""
     if [ -n "$extra_remote_ports" ]; then
         for extra_port in $extra_remote_ports; do
             extra_blocks+="
@@ -117,6 +118,21 @@ server {
         proxy_read_timeout 86400;
     }
 }
+"
+            extra_locations+="
+    location /extraport-${extra_port}/ {
+        proxy_pass http://127.0.0.1:${extra_port}/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection upgrade;
+        proxy_buffering off;
+        proxy_http_version 1.1;
+        proxy_read_timeout 86400;
+    }
 "
             log "Allowing UFW for extra port ${extra_port}."
             sudo ufw allow ${extra_port}/tcp || log "WARN: ufw allow ${extra_port}/tcp failed"
@@ -145,6 +161,8 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/$full_hostname/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+$extra_locations
 
     location / {
         proxy_pass http://127.0.0.1:$remote_port;
