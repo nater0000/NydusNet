@@ -4,6 +4,13 @@ LOG_FILE="/tmp/setup_tunnel.log"
 LOCK_FILE="/tmp/certbot_nginx.lock"
 WEBROOT_PATH="/var/www/html"
 
+# Derive the server's public IPv4 so nginx extra-port listeners bind only to it
+# (avoids conflicting with sshd's 127.0.0.1 reverse-forward on the same port)
+SERVER_IP=$(/usr/sbin/ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+if [[ -z "$SERVER_IP" ]]; then
+    SERVER_IP=$(/bin/hostname -I 2>/dev/null | awk '{print $1}')
+fi
+
 # Function to write log messages
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
@@ -88,7 +95,7 @@ EOF
         for extra_port in $extra_remote_ports; do
             extra_blocks+="
 server {
-    listen ${extra_port} ssl;
+    listen ${SERVER_IP}:${extra_port} ssl;
     server_name $full_hostname;
 
     ssl_certificate /etc/letsencrypt/live/$full_hostname/fullchain.pem;
