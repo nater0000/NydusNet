@@ -268,7 +268,8 @@ class ServerProvisioner:
             "/usr/sbin/nginx -t",
             "/usr/bin/tee /etc/nginx/sites-available/*",
             "/usr/bin/ln -sfn /etc/nginx/sites-available/* /etc/nginx/sites-enabled/",
-            "/usr/bin/certbot *" # Granting broad certbot access
+            "/usr/bin/certbot *", # Granting broad certbot access
+            "/usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp" # Extra service ports (LiveKit, WebSockets, etc.)
         ]
         sudo_line = f"{self.tunnel_user} ALL=(ALL) NOPASSWD: {', '.join(allowed_commands)}"
 

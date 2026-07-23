@@ -51,7 +51,7 @@
         path: /etc/sudoers
         state: present
         regexp: '^tunnel ALL='
-        line: "tunnel ALL=(ALL) NOPASSWD: /usr/sbin/nginx -s reload, /usr/bin/tee /etc/nginx/sites-available/*, /usr/bin/ln -sfn /etc/nginx/sites-available/* /etc/nginx/sites-enabled/, /usr/sbin/nginx -t, /usr/bin/certbot *"
+        line: "tunnel ALL=(ALL) NOPASSWD: /usr/sbin/nginx -s reload, /usr/bin/tee /etc/nginx/sites-available/*, /usr/bin/ln -sfn /etc/nginx/sites-available/* /etc/nginx/sites-enabled/, /usr/sbin/nginx -t, /usr/bin/certbot *, /usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp"
         validate: 'visudo -cf %s'
       tags: ['user', 'security']
 

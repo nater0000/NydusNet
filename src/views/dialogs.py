@@ -710,6 +710,18 @@ class TunnelDialog(BaseDialog):
         self.local_dest_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., 'localhost:8080'")
         self.local_dest_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
 
+        # --- Extra Service Ports (e.g. LiveKit WebSocket) ---
+        row += 1
+        self.extra_ports_label = ctk.CTkLabel(form_frame, text="Extra Service Ports:")
+        self.extra_ports_label.grid(row=row, column=0, padx=10, pady=5, sticky="w")
+
+        self.extra_ports_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., '7880:localhost:7880'")
+        self.extra_ports_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+        if self.tooltip:
+             tooltip_text = "Optional extra public:local port pairs for WSS services like LiveKit (comma separated)."
+             self.extra_ports_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+             self.extra_ports_entry.bind("<Leave>", self.tooltip.schedule_hide)
+
         # --- Auto Start ---
         row += 1
         self.auto_start_var = ctk.StringVar(value="on")
@@ -722,6 +734,7 @@ class TunnelDialog(BaseDialog):
         self.hostname_entry.insert(0, self.initial_data.get("hostname", ""))
         self.remote_port_entry.insert(0, self.initial_data.get("remote_port", ""))
         self.local_dest_entry.insert(0, self.initial_data.get("local_destination", ""))
+        self.extra_ports_entry.insert(0, self.initial_data.get("extra_ports", ""))
         
         # Set server dropdown
         initial_server_id = self.initial_data.get("server_id")
@@ -880,6 +893,7 @@ class TunnelDialog(BaseDialog):
             "remote_port": remote_port, # In local mode, this is the App Port
             "auto_start_on_device_ids": auto_start_list,
             "obj_type": "tunnel",
+            "extra_ports": self.extra_ports_entry.get().strip(), # public:local pairs (comma separated)
             "route_type": route_mode # New Field
         })
         

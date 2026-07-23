@@ -167,12 +167,33 @@ class TunnelManager:
                 '-4',
             ]
 
+            extra_remote_ports = []
             # Only add forwarding and exit-on-failure if it's a standard tunnel
             if not is_local_route:
                 command.append('-o')
                 command.append("ExitOnForwardFailure=yes")
                 command.append('-R')
                 command.append(f"{tunnel_config['remote_port']}:{tunnel_config['local_destination']}")
+
+                # --- Extra service ports (LiveKit / WebSocket / etc.) ---
+                extra_ports_str = tunnel_config.get('extra_ports', '').strip()
+                if extra_ports_str:
+                    for spec in extra_ports_str.split(','):
+                        spec = spec.strip()
+                        if not spec:
+                            continue
+                        if ':' not in spec:
+                            logging.warning(f"Skipping invalid extra port spec '{spec}' for tunnel {tunnel_id} (expected remote:local)")
+                            continue
+                        remote_port, local_dest = spec.split(':', 1)
+                        remote_port = remote_port.strip()
+                        local_dest = local_dest.strip()
+                        if not remote_port.isdigit() or not local_dest:
+                            logging.warning(f"Skipping invalid extra port spec '{spec}' for tunnel {tunnel_id}")
+                            continue
+                        command.append('-R')
+                        command.append(f"{remote_port}:{local_dest}")
+                        extra_remote_ports.append(remote_port)
 
             command.append(f"{tunnel_user}@{server_config['ip_address']}")
             
@@ -181,7 +202,8 @@ class TunnelManager:
             # to point to localhost:{remote_port}.
             # The server-side 'authorized_keys' usually forces this command + 'sleep infinity',
             # keeping the connection open for monitoring.
-            command.append(f"{tunnel_config['hostname']} {tunnel_config['remote_port']}")
+            extra_ports_cmd = ' '.join(extra_remote_ports)
+            command.append(f"{tunnel_config['hostname']} {tunnel_config['remote_port']}{' ' + extra_ports_cmd if extra_ports_cmd else ''}")
 
             logging.info(f"Starting {route_type} '{tunnel_config['hostname']}' (ID: {tunnel_id})")
             logging.debug(f"SSH command list: {command}")
