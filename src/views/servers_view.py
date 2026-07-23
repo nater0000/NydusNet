@@ -135,19 +135,18 @@ class ServersView(ctk.CTkFrame):
                     btn_frame.grid(row=0, column=2, padx=(5, 10), pady=5, sticky="e")
                     btn_width = 30 
 
-                    # --- Setup Button (if not provisioned) ---
-                    if not is_provisioned:
-                        setup_icon = self.images.get("setup") 
-                        setup_btn = ctk.CTkButton(btn_frame, text="", image=setup_icon, 
-                                                 width=btn_width,
-                                                 command=lambda s=server: self._ask_provision(s))
-                        setup_btn.pack(side="left", padx=3)
-                        
-                        # --- FIX: Bind to setup_btn, not edit_btn ---
-                        if self.tooltip:
-                            tooltip_text = f"Run Setup for {server_name}"
-                            setup_btn.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
-                            setup_btn.bind("<Leave>", self.tooltip.schedule_hide)
+                    # --- Setup / Re-provision Button ---
+                    setup_icon = self.images.get("setup")
+                    setup_btn = ctk.CTkButton(btn_frame, text="", image=setup_icon,
+                                             width=btn_width,
+                                             command=lambda s=server: self._ask_provision(s))
+                    setup_btn.pack(side="left", padx=3)
+                    
+                    # --- FIX: Bind to setup_btn, not edit_btn ---
+                    if self.tooltip:
+                        tooltip_text = f"Re-provision {server_name}" if is_provisioned else f"Run Setup for {server_name}"
+                        setup_btn.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
+                        setup_btn.bind("<Leave>", self.tooltip.schedule_hide)
 
                     # --- Edit Button (always shown) ---
                     edit_icon = self.images.get("edit")
