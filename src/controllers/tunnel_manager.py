@@ -176,24 +176,28 @@ class TunnelManager:
                 command.append(f"{tunnel_config['remote_port']}:{tunnel_config['local_destination']}")
 
                 # --- Extra service ports (LiveKit / WebSocket / etc.) ---
+                # Format: [scheme:]remote:local  (default scheme is http)
+                # Supported schemes: http, wss, raw, tcp
+                # raw/tcp => Nginx stream/L4 proxy (for protocols like LiveKit media)
                 extra_ports_str = tunnel_config.get('extra_ports', '').strip()
                 if extra_ports_str:
                     for spec in extra_ports_str.split(','):
                         spec = spec.strip()
                         if not spec:
                             continue
-                        if ':' not in spec:
-                            logging.warning(f"Skipping invalid extra port spec '{spec}' for tunnel {tunnel_id} (expected remote:local)")
+                        match = re.fullmatch(r'(?:(raw|tcp|http|wss):)?(\d+):(.+)', spec, re.IGNORECASE)
+                        if not match:
+                            logging.warning(f"Skipping invalid extra port spec '{spec}' for tunnel {tunnel_id} (expected [scheme:]remote:local)")
                             continue
-                        remote_port, local_dest = spec.split(':', 1)
-                        remote_port = remote_port.strip()
-                        local_dest = local_dest.strip()
-                        if not remote_port.isdigit() or not local_dest:
-                            logging.warning(f"Skipping invalid extra port spec '{spec}' for tunnel {tunnel_id}")
+                        scheme = (match.group(1) or 'http').lower()
+                        remote_port = match.group(2)
+                        local_dest = match.group(3).strip()
+                        if not local_dest:
+                            logging.warning(f"Skipping invalid extra port spec '{spec}' for tunnel {tunnel_id} (missing local destination)")
                             continue
                         command.append('-R')
                         command.append(f"{remote_port}:{local_dest}")
-                        extra_remote_ports.append(remote_port)
+                        extra_remote_ports.append(f"{scheme}:{remote_port}" if scheme in ('raw', 'tcp') else remote_port)
 
             command.append(f"{tunnel_user}@{server_config['ip_address']}")
             

@@ -715,10 +715,10 @@ class TunnelDialog(BaseDialog):
         self.extra_ports_label = ctk.CTkLabel(form_frame, text="Extra Service Ports:")
         self.extra_ports_label.grid(row=row, column=0, padx=10, pady=5, sticky="w")
 
-        self.extra_ports_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., '7880:localhost:7880'")
+        self.extra_ports_entry = ctk.CTkEntry(form_frame, placeholder_text="e.g., '7880:localhost:7880, raw:7881:localhost:7881'")
         self.extra_ports_entry.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
         if self.tooltip:
-             tooltip_text = "Optional extra public:local port pairs for WSS services like LiveKit (comma separated)."
+             tooltip_text = "Optional extra public:local port pairs.\nDefault (http/wss): e.g., '7880:localhost:7880'\nRaw TCP (Nginx stream/L4): prefix with 'raw:' or 'tcp:', e.g., 'raw:7881:localhost:7881'."
              self.extra_ports_entry.bind("<Enter>", lambda e, text=tooltip_text: self.tooltip.schedule_show(e, text))
              self.extra_ports_entry.bind("<Leave>", self.tooltip.schedule_hide)
 

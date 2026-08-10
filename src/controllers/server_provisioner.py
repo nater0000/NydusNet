@@ -85,6 +85,7 @@ class ServerProvisioner:
                 if not self._create_webroot(c): return False, self.log_output
                 if not self._configure_firewall(c): return False, self.log_output
                 if not self._ensure_nginx_running(c): return False, self.log_output
+                if not self._ensure_nginx_stream_support(c): return False, self.log_output
                 # Note: Heartbeat configuration excluded
 
                 self._log("\n✅ Full VPS provisioning completed successfully!")
@@ -98,7 +99,7 @@ class ServerProvisioner:
         """Updates apt cache and installs required packages."""
         self._log("Updating package cache and installing required packages...")
         packages = [
-            "nginx", "certbot", "python3-certbot-nginx",
+            "nginx-extras", "certbot", "python3-certbot-nginx",
             "fail2ban", "ufw", "lsof"
         ]
         
@@ -269,7 +270,9 @@ class ServerProvisioner:
             "/usr/bin/tee /etc/nginx/sites-available/*",
             "/usr/bin/ln -sfn /etc/nginx/sites-available/* /etc/nginx/sites-enabled/",
             "/usr/bin/certbot *", # Granting broad certbot access
-            "/usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp" # Extra service ports (LiveKit, WebSockets, etc.)
+            "/usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp", # Extra service ports (LiveKit, WebSockets, etc.)
+            "/usr/bin/tee /etc/nginx/streams-available/*", # Raw TCP stream configs
+            "/usr/bin/ln -sfn /etc/nginx/streams-available/* /etc/nginx/streams-enabled/" # Enable stream configs
         ]
         sudo_line = f"{self.tunnel_user} ALL=(ALL) NOPASSWD: {', '.join(allowed_commands)}"
 
@@ -349,6 +352,33 @@ class ServerProvisioner:
             return True
         except Exception as e:
             self._log(f"❌ Failed to start/enable Nginx service: {e}")
+            return False
+
+    def _ensure_nginx_stream_support(self, c: Connection) -> bool:
+        """Creates stream config directories and ensures nginx.conf includes them."""
+        self._log("Ensuring Nginx stream (raw TCP) support...")
+        try:
+            # Create stream config directories
+            c.sudo('mkdir -p /etc/nginx/streams-available /etc/nginx/streams-enabled', hide=True)
+            c.sudo('chown root:root /etc/nginx/streams-available /etc/nginx/streams-enabled', hide=True)
+            c.sudo('chmod 755 /etc/nginx/streams-available /etc/nginx/streams-enabled', hide=True)
+            self._log("Nginx stream config directories created.")
+
+            # Ensure nginx.conf has a top-level stream include
+            nginx_conf = "/etc/nginx/nginx.conf"
+            stream_line = "stream { include /etc/nginx/streams-enabled/*; }"
+            check_result = c.run(f'grep -qF "{stream_line}" {nginx_conf}', warn=True, hide=True)
+            if not check_result.ok:
+                self._log("Adding stream include to nginx.conf...")
+                c.sudo(f'sh -c \'printf "\\n{stream_line}\\n" >> {nginx_conf}\'', hide=True)
+                self._log("Stream include added to nginx.conf.")
+            else:
+                self._log("Stream include already present in nginx.conf.")
+
+            return True
+        except Exception as e:
+            self._log(f"❌ Failed to ensure Nginx stream support: {e}")
+            logging.error("Nginx stream support setup failed", exc_info=True)
             return False
 
     # --- Methods below are for potential use with admin credentials, ---
