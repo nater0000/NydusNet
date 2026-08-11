@@ -41,9 +41,13 @@ if [[ -z "$SERVER_IP" ]]; then
     )
 fi
 
-# Function to write log messages
+# Function to write log messages to both the log file and stdout
+# (stdout is captured by the NydusNet client, the file is for server-side debugging)
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    local msg
+    msg="$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo "$msg" | tee -a "$LOG_FILE" >/dev/null
+    echo "$msg"
 }
 
 log "SERVER_IP resolved to: ${SERVER_IP:-<empty>} (methods: ip route, ip addr, hostname -I)"

@@ -340,17 +340,44 @@ class ServerProvisioner:
             # Use systemctl if available. We restart (not just start) so a freshly
             # installed nginx-extras binary with stream support is loaded.
             if c.run('command -v systemctl', hide=True, warn=True).ok:
+                self._log("Restarting Nginx service with systemctl...")
                 c.sudo('systemctl enable nginx', hide=True)
                 c.sudo('systemctl restart nginx', hide=True)
             # Fallback for older systems (less likely but possible)
             elif c.run('command -v update-rc.d', hide=True, warn=True).ok:
+                 self._log("Restarting Nginx service with service...")
                  c.sudo('update-rc.d nginx defaults', hide=True)
                  c.sudo('service nginx restart', hide=True)
             else:
                  self._log("❌ Could not determine service manager (systemctl or service). Cannot manage Nginx service.")
                  return False
 
-            self._log("Nginx service is started and enabled.")
+            self._log("Nginx service restarted and enabled.")
+
+            # Verify the running Nginx binary supports the stream module
+            try:
+                nginx_flags = c.sudo('/usr/sbin/nginx -V', hide=True, warn=True)
+                if nginx_flags.ok:
+                    flags = nginx_flags.stderr.strip().split()
+                    with_stream = '--with-stream' in flags
+                    self._log(f"Nginx stream module compiled in: {with_stream}")
+                    if not with_stream:
+                        self._log("⚠️ Nginx does not appear to have --with-stream. Raw TCP forwarding will not work.")
+                else:
+                    self._log("⚠️ Could not verify Nginx compile flags.")
+            except Exception as e:
+                self._log(f"⚠️ Could not verify Nginx compile flags: {e}")
+
+            # Verify Nginx is actually listening
+            try:
+                listeners = c.sudo('ss -ltn | grep :443 || true', hide=True, warn=True)
+                if listeners.ok and listeners.stdout.strip():
+                    self._log("Nginx is listening on port 443.")
+                else:
+                    self._log("⚠️ Nginx does not appear to be listening on port 443 yet.")
+            except Exception as e:
+                self._log(f"⚠️ Could not verify Nginx listeners: {e}")
+
             return True
         except Exception as e:
             self._log(f"❌ Failed to start/enable Nginx service: {e}")
@@ -376,6 +403,15 @@ class ServerProvisioner:
                 self._log("Stream include added to nginx.conf.")
             else:
                 self._log("Stream include already present in nginx.conf.")
+
+            # Reload Nginx so the stream include is actually active
+            self._log("Reloading Nginx to activate stream support...")
+            reload_result = c.sudo('/usr/sbin/nginx -t && systemctl reload nginx', hide=True, warn=True)
+            if reload_result.ok:
+                self._log("Nginx reloaded with stream support.")
+            else:
+                self._log("❌ Nginx config test or reload failed; stream support may not be active.")
+                return False
 
             return True
         except Exception as e:
