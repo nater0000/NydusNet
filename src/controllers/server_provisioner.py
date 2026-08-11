@@ -359,10 +359,12 @@ class ServerProvisioner:
                 nginx_flags = c.sudo('/usr/sbin/nginx -V', hide=True, warn=True)
                 if nginx_flags.ok:
                     flags = nginx_flags.stderr.strip().split()
-                    with_stream = '--with-stream' in flags
-                    self._log(f"Nginx stream module compiled in: {with_stream}")
+                    with_stream = any(f.startswith('--with-stream') for f in flags)
+                    self._log(f"Nginx stream module support detected: {with_stream}")
                     if not with_stream:
                         self._log("⚠️ Nginx does not appear to have --with-stream. Raw TCP forwarding will not work.")
+                    else:
+                        self._log(f"Stream flag(s): {[f for f in flags if f.startswith('--with-stream')]}")
                 else:
                     self._log("⚠️ Could not verify Nginx compile flags.")
             except Exception as e:
