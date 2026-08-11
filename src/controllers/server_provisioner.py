@@ -272,7 +272,8 @@ class ServerProvisioner:
             "/usr/bin/certbot *", # Granting broad certbot access
             "/usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp", # Extra service ports (LiveKit, WebSockets, etc.)
             "/usr/bin/tee /etc/nginx/streams-available/*", # Raw TCP stream configs
-            "/usr/bin/ln -sfn /etc/nginx/streams-available/* /etc/nginx/streams-enabled/" # Enable stream configs
+            "/usr/bin/ln -sfn /etc/nginx/streams-available/* /etc/nginx/streams-enabled/", # Enable stream configs
+            "/bin/mkdir -p /etc/nginx/streams-available /etc/nginx/streams-enabled" # Create stream config directories
         ]
         sudo_line = f"{self.tunnel_user} ALL=(ALL) NOPASSWD: {', '.join(allowed_commands)}"
 
@@ -336,14 +337,15 @@ class ServerProvisioner:
         """Ensures the Nginx service is started and enabled on boot."""
         self._log("Ensuring Nginx service is running and enabled...")
         try:
-            # Use systemctl if available
+            # Use systemctl if available. We restart (not just start) so a freshly
+            # installed nginx-extras binary with stream support is loaded.
             if c.run('command -v systemctl', hide=True, warn=True).ok:
                 c.sudo('systemctl enable nginx', hide=True)
-                c.sudo('systemctl start nginx', hide=True)
+                c.sudo('systemctl restart nginx', hide=True)
             # Fallback for older systems (less likely but possible)
             elif c.run('command -v update-rc.d', hide=True, warn=True).ok:
                  c.sudo('update-rc.d nginx defaults', hide=True)
-                 c.sudo('service nginx start', hide=True)
+                 c.sudo('service nginx restart', hide=True)
             else:
                  self._log("❌ Could not determine service manager (systemctl or service). Cannot manage Nginx service.")
                  return False

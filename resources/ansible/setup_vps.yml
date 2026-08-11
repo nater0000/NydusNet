@@ -51,7 +51,7 @@
         path: /etc/sudoers
         state: present
         regexp: '^tunnel ALL='
-        line: "tunnel ALL=(ALL) NOPASSWD: /usr/sbin/nginx -s reload, /usr/bin/tee /etc/nginx/sites-available/*, /usr/bin/ln -sfn /etc/nginx/sites-available/* /etc/nginx/sites-enabled/, /usr/sbin/nginx -t, /usr/bin/certbot *, /usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp, /usr/bin/tee /etc/nginx/streams-available/*, /usr/bin/ln -sfn /etc/nginx/streams-available/* /etc/nginx/streams-enabled/"
+        line: "tunnel ALL=(ALL) NOPASSWD: /usr/sbin/nginx -s reload, /usr/bin/tee /etc/nginx/sites-available/*, /usr/bin/ln -sfn /etc/nginx/sites-available/* /etc/nginx/sites-enabled/, /usr/sbin/nginx -t, /usr/bin/certbot *, /usr/sbin/ufw allow [0-9][0-9][0-9][0-9]*/tcp, /usr/bin/tee /etc/nginx/streams-available/*, /usr/bin/ln -sfn /etc/nginx/streams-available/* /etc/nginx/streams-enabled/, /bin/mkdir -p /etc/nginx/streams-available /etc/nginx/streams-enabled"
         validate: 'visudo -cf %s'
       tags: ['user', 'security']
 
@@ -89,7 +89,7 @@
         state: present
         regexp: '^stream\s*\{.*include /etc/nginx/streams-enabled/\*'
         line: 'stream { include /etc/nginx/streams-enabled/*; }'
-      notify: Reload Nginx
+      notify: Restart Nginx
       tags: ['nginx', 'stream']
 
     - name: Allow SSH and Nginx through the firewall
@@ -106,10 +106,10 @@
         state: enabled
       tags: ['firewall']
 
-    - name: Ensure Nginx service is started and enabled
+    - name: Ensure Nginx service is restarted and enabled
       service:
         name: nginx
-        state: started
+        state: restarted
         enabled: yes
       tags: ['nginx']
 
@@ -118,3 +118,8 @@
       service:
         name: nginx
         state: reloaded
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

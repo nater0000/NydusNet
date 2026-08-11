@@ -2,6 +2,8 @@ import customtkinter as ctk
 import json
 import logging # Added logging
 
+from utils.version import get_version
+
 class DebugView(ctk.CTkFrame):
     """
     A view for developers to inspect the raw in-memory configuration state.
@@ -13,15 +15,20 @@ class DebugView(ctk.CTkFrame):
 
         # Configure grid layout: two columns, right one expands
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1) # Row containing list and display expands vertically
+        self.grid_rowconfigure(0, weight=0) # Version label, fixed height
+        self.grid_rowconfigure(1, weight=1) # Row containing list and display expands vertically
+
+        # --- Version label at top ---
+        self.version_label = ctk.CTkLabel(self, text=f"NydusNet v{get_version()}", font=("Arial", 14, "bold"))
+        self.version_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 0), sticky="w")
 
         # --- Left Frame for Object List ---
         self.object_list_frame = ctk.CTkScrollableFrame(self, label_text="Config Objects")
-        self.object_list_frame.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="nsew") # Added horizontal padding
+        self.object_list_frame.grid(row=1, column=0, padx=(10, 5), pady=10, sticky="nsew") # Added horizontal padding
 
         # --- Right Frame for JSON Display ---
         self.json_display = ctk.CTkTextbox(self, wrap="none", font=("Courier New", 12)) # Changed wrap to "none"
-        self.json_display.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew") # Added horizontal padding
+        self.json_display.grid(row=1, column=1, padx=(5, 10), pady=10, sticky="nsew") # Added horizontal padding
         self.json_display.configure(state="disabled") # Start read-only
 
     def on_enter(self):

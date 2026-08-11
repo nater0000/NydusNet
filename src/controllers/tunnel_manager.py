@@ -207,10 +207,12 @@ class TunnelManager:
             # The server-side 'authorized_keys' usually forces this command + 'sleep infinity',
             # keeping the connection open for monitoring.
             extra_ports_cmd = ' '.join(extra_remote_ports)
-            command.append(f"{tunnel_config['hostname']} {tunnel_config['remote_port']}{' ' + extra_ports_cmd if extra_ports_cmd else ''}")
+            remote_command = f"{tunnel_config['hostname']} {tunnel_config['remote_port']}{' ' + extra_ports_cmd if extra_ports_cmd else ''}"
+            command.append(remote_command)
 
             logging.info(f"Starting {route_type} '{tunnel_config['hostname']}' (ID: {tunnel_id})")
-            logging.debug(f"SSH command list: {command}")
+            logging.info(f"SSH original command sent to server: {remote_command}")
+            logging.debug(f"Full SSH command list: {command}")
             try:
                 startupinfo = None
                 creationflags = 0

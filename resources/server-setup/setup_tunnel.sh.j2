@@ -46,6 +46,8 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
+log "SERVER_IP resolved to: ${SERVER_IP:-<empty>} (methods: ip route, ip addr, hostname -I)"
+
 # --- Main Script Logic ---
 exec 2>> "$LOG_FILE"
 
@@ -83,6 +85,8 @@ for token in $extra_remote_ports; do
   fi
   extra_port_list+=("${scheme}:${port}")
 done
+
+log "Parsed extra_port_list: ${extra_port_list[*]:-<none>}"
 
 CERT_DIR="/etc/letsencrypt/live/$full_hostname"
 NGINX_CONF="/etc/nginx/sites-available/$full_hostname"
@@ -130,6 +134,9 @@ EOF
     else
         log "Certificate for $full_hostname already exists. Skipping Stage 1."
     fi
+
+    # Log the Nginx binary compile flags so we can confirm stream support
+    log "Nginx compile flags (stream/HTTP3/Lua/etc.): $(/usr/sbin/nginx -V 2>&1 | tr ' ' '\n' | grep -E '^--with-' | tr '\n' ' ')"
 
     # STAGE 2: Build extra service blocks (LiveKit / WebSocket / etc.)
     extra_blocks=""
@@ -199,11 +206,16 @@ server {
     # The file is included inside the top-level `stream` block in nginx.conf,
     # so it should only contain `server` blocks, not another `stream` context.
     if [ -n "$stream_servers" ]; then
+        # Ensure stream config directories exist
+        sudo /bin/mkdir -p /etc/nginx/streams-available /etc/nginx/streams-enabled || log "WARN: mkdir for stream dirs failed (may already exist)"
+
         log "Writing Nginx stream config to $NGINX_STREAM_CONF."
+        log "Stream servers block:\n${stream_servers}"
         cat <<EOF | sudo /usr/bin/tee "$NGINX_STREAM_CONF" > /dev/null
 ${stream_servers}
 EOF
         sudo /usr/bin/ln -sfn "$NGINX_STREAM_CONF" "/etc/nginx/streams-enabled/"
+        log "Stream config symlinked to /etc/nginx/streams-enabled/."
     fi
 
     # STAGE 3: Create the Final HTTPS Nginx Configuration
@@ -253,9 +265,34 @@ EOF
         log "ERROR: Final Nginx configuration test failed. Not reloading."
         exit 1
     fi
+    log "Final Nginx configuration test passed."
+
     log "Reloading Nginx with final config."
-    sudo /usr/sbin/nginx -s reload
-    log "Nginx reloaded successfully."
+    if ! sudo /usr/sbin/nginx -s reload; then
+        log "ERROR: Nginx reload signal failed."
+        exit 1
+    fi
+    log "Nginx reload signal sent."
+
+    # Give Nginx a moment to bind new ports, then verify listeners
+    sleep 1
+    log "Verifying listening sockets for this host:"
+    if command -v ss >/dev/null 2>&1; then
+        extra_ports_only=""
+        for p in "${extra_port_list[@]}"; do
+            extra_ports_only="${extra_ports_only}${extra_ports_only:+|}${p#*:}"
+        done
+        listen_pattern=":(${remote_port}${extra_ports_only:+|${extra_ports_only}})"
+        log "Listening check pattern: ${listen_pattern}"
+        matched_listeners=$(ss -ltn | grep -E "${listen_pattern}" || true)
+        if [ -n "$matched_listeners" ]; then
+            log "Matched listeners:\n${matched_listeners}"
+        else
+            log "WARN: No listeners matched pattern ${listen_pattern}. The port may not be bound yet or may be blocked upstream."
+        fi
+    else
+        log "ss utility not available; skipping listener verification."
+    fi
 
 ) 200>"$LOCK_FILE"
 

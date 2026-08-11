@@ -14,6 +14,7 @@ from controllers.config_manager import ConfigManager
 from controllers.syncthing_manager import SyncthingManager
 from controllers.tunnel_manager import TunnelManager
 from utils.crypto import CryptoManager
+from utils.version import get_version
 from controllers.server_provisioner import ServerProvisioner
 
 # --- Views ---
@@ -37,7 +38,8 @@ class App(ctk.CTk):
     def __init__(self, *args, **kwargs):
         """Initializes the main application window and core components."""
         super().__init__(*args, **kwargs)
-        self.title("NydusNet")
+        self._version = get_version()
+        self.title(f"NydusNet v{self._version}")
 
         # --- Icon Setup ---
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
