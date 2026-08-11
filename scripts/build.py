@@ -220,7 +220,7 @@ if __name__ == '__main__':
             # --- *** END UPDATE *** ---
 
             # --- Bundle pyproject.toml so version can be read at runtime ---
-            '--add-data', f'pyproject.toml{add_data_sep}.'
+            '--add-data', f'pyproject.toml{add_data_sep}.',
 
             # --- Add Icon ---
              '--icon', icon_abs # Use absolute path for icon
